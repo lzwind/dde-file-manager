@@ -11,6 +11,7 @@ namespace ActionID {
 inline constexpr char kSortBy[] = "sort-by";
 inline constexpr char kDisplayAs[] = "display-as";
 inline constexpr char kRefresh[] = "refresh";
+inline constexpr char kSmartClassify[] = "smart-classify";
 
 // sort by
 inline constexpr char kSrtName[] = "sort-by-name";

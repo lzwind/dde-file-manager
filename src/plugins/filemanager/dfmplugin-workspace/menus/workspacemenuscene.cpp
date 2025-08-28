@@ -4,6 +4,7 @@
 
 #include "workspacemenuscene.h"
 #include "workspacemenuscene_p.h"
+#include "unified_filebrowser.h"
 #include "events/workspaceeventcaller.h"
 
 #include "views/fileview.h"
@@ -205,6 +206,20 @@ bool WorkspaceMenuScene::create(DMenu *parent)
         auto tempAction = parent->addAction(d->predicateName.value(ActionID::kRefresh));
         d->predicateAction[ActionID::kRefresh] = tempAction;
         tempAction->setProperty(ActionPropertyKey::kActionID, QString(ActionID::kRefresh));
+        
+        // 添加智能分类菜单项
+        fmDebug() << "Adding smart classify action for empty area menu";
+        auto smartClassifyAction = parent->addAction(QStringLiteral("智能分类"));
+        d->predicateAction[ActionID::kSmartClassify] = smartClassifyAction;
+        smartClassifyAction->setProperty(ActionPropertyKey::kActionID, QString(ActionID::kSmartClassify));
+    } else {
+        // 检查是否选中了文件夹，如果是，则也添加智能分类菜单
+        if (d->focusFileInfo && d->focusFileInfo->isAttributes(OptInfoType::kIsDir)) {
+            fmDebug() << "Adding smart classify action for folder menu";
+            auto smartClassifyAction = parent->addAction(QStringLiteral("智能分类"));
+            d->predicateAction[ActionID::kSmartClassify] = smartClassifyAction;
+            smartClassifyAction->setProperty(ActionPropertyKey::kActionID, QString(ActionID::kSmartClassify));
+        }
     }
 
     // 创建子场景菜单
@@ -278,6 +293,21 @@ bool WorkspaceMenuScene::emptyMenuTriggered(QAction *action)
 {
     const auto &actionId = action->property(ActionPropertyKey::kActionID).toString();
     fmDebug() << "Processing empty area menu action:" << actionId;
+    
+    // 处理智能分类菜单点击
+    if (actionId == ActionID::kSmartClassify) {
+        fmDebug() << "Opening smart classify window for empty area";
+        UnifiedFileBrowser *browser = nullptr;
+        if (d->view) {
+            QString currentPath = d->view->rootUrl().toLocalFile();
+            fmDebug() << "Opening smart classify for path:" << currentPath;
+            browser = new UnifiedFileBrowser(currentPath);
+        } else {
+            browser = new UnifiedFileBrowser();
+        }
+        browser->show();
+        return true;
+    }
 
     auto actionScene = scene(action);
     if (!actionScene) {
@@ -365,6 +395,25 @@ bool WorkspaceMenuScene::normalMenuTriggered(QAction *action)
 {
     const auto &actionId = action->property(ActionPropertyKey::kActionID).toString();
     fmDebug() << "Processing normal menu action:" << actionId;
+    
+    // 处理智能分类菜单点击
+    if (actionId == ActionID::kSmartClassify) {
+        fmDebug() << "Opening smart classify window for selected folder";
+        UnifiedFileBrowser *browser = nullptr;
+        if (d->focusFileInfo && d->focusFileInfo->isAttributes(OptInfoType::kIsDir)) {
+            QString folderPath = d->focusFileInfo->fileUrl().toLocalFile();
+            fmDebug() << "Opening smart classify for folder:" << folderPath;
+            browser = new UnifiedFileBrowser(folderPath);
+        } else if (d->view) {
+            QString currentPath = d->view->rootUrl().toLocalFile();
+            fmDebug() << "Opening smart classify for current path:" << currentPath;
+            browser = new UnifiedFileBrowser(currentPath);
+        } else {
+            browser = new UnifiedFileBrowser();
+        }
+        browser->show();
+        return true;
+    }
 
     auto actionScene = scene(action);
     if (!actionScene) {

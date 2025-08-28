@@ -1,0 +1,882 @@
+#include "unified_filebrowser.h"
+#include <QApplication>
+#include <QDir>
+#include <QStandardPaths>
+#include <QMessageBox>
+#include <QStyle>
+#include <QKeySequence>
+#include <QFileInfo>
+#include <QMimeDatabase>
+#include <QDesktopServices>
+#include <QUrl>
+#include <QClipboard>
+#include <QFileDialog>
+#include <QInputDialog>
+#include <QProcess>
+#include <QThread>
+#include <QMutex>
+#include <QFuture>
+#include <QtConcurrent>
+
+UnifiedFileBrowser::UnifiedFileBrowser(QWidget *parent)
+    : UnifiedFileBrowser(QString(), parent)
+{
+}
+
+UnifiedFileBrowser::UnifiedFileBrowser(const QString& initialPath, QWidget *parent)
+    : QMainWindow(parent)
+    , m_currentSortType(SortByName)
+    , m_currentSortOrder(Ascending)
+    , m_currentGroupType(NoGrouping)
+    , m_currentGroupOrder(Ascending)
+    , m_centralWidget(nullptr)
+    , m_mainLayout(nullptr)
+    , m_fileList(nullptr)
+    , m_toolBar(nullptr)
+    , m_pathEdit(nullptr)
+    , m_sortCombo(nullptr)
+    , m_groupCombo(nullptr)
+    , m_homeAction(nullptr)
+    , m_upAction(nullptr)
+    , m_refreshAction(nullptr)
+    , m_pathLabel(nullptr)
+    , m_itemCountLabel(nullptr)
+    , m_selectionLabel(nullptr)
+    , m_loadingProgress(nullptr)
+    , m_contextMenu(nullptr)
+    , m_watcher(nullptr)
+    , m_iconProvider(nullptr)
+    , m_loadingTimer(nullptr)
+{
+    // 初始化文件系统监控（必须在setupConnections之前）
+    m_watcher = new QFileSystemWatcher(this);
+    m_iconProvider = new QFileIconProvider();
+    m_loadingTimer = new QTimer(this);
+    m_loadingTimer->setSingleShot(true);
+    
+    setupUI();
+    setupToolBar();
+    setupStatusBar();
+    setupContextMenu();
+    setupConnections();
+    
+    // 导航到指定目录或主目录
+    QString targetPath = initialPath;
+    if (targetPath.isEmpty() || !QDir(targetPath).exists()) {
+        targetPath = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
+    }
+    navigateToPath(targetPath);
+}
+
+UnifiedFileBrowser::~UnifiedFileBrowser()
+{
+    delete m_iconProvider;
+}
+
+void UnifiedFileBrowser::setupUI()
+{
+    // 创建中央窗口部件
+    m_centralWidget = new QWidget(this);
+    setCentralWidget(m_centralWidget);
+    
+    m_mainLayout = new QVBoxLayout(m_centralWidget);
+    m_mainLayout->setContentsMargins(5, 5, 5, 5);
+    m_mainLayout->setSpacing(5);
+    
+    // 创建文件列表
+    m_fileList = new QListWidget(this);
+    m_fileList->setContextMenuPolicy(Qt::CustomContextMenu);
+    m_fileList->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_fileList->setAlternatingRowColors(true);
+    m_fileList->setUniformItemSizes(false);
+    
+    m_mainLayout->addWidget(m_fileList);
+    
+    // 设置窗口属性
+    setWindowTitle(tr("统一文件浏览器"));
+    setMinimumSize(800, 600);
+    resize(1200, 700);
+}
+
+void UnifiedFileBrowser::setupToolBar()
+{
+    m_toolBar = addToolBar(tr("主工具栏"));
+    m_toolBar->setMovable(false);
+    
+    // 主页按钮
+    m_homeAction = new QAction(this);
+    m_homeAction->setIcon(style()->standardIcon(QStyle::SP_DirHomeIcon));
+    m_homeAction->setText(tr("主页"));
+    m_homeAction->setToolTip(tr("转到主目录"));
+    m_toolBar->addAction(m_homeAction);
+    
+    // 向上按钮
+    m_upAction = new QAction(this);
+    m_upAction->setIcon(style()->standardIcon(QStyle::SP_FileDialogToParent));
+    m_upAction->setText(tr("向上"));
+    m_upAction->setToolTip(tr("转到上级目录"));
+    m_toolBar->addAction(m_upAction);
+    
+    // 刷新按钮
+    m_refreshAction = new QAction(this);
+    m_refreshAction->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
+    m_refreshAction->setText(tr("刷新"));
+    m_refreshAction->setToolTip(tr("刷新当前目录"));
+    m_refreshAction->setShortcut(QKeySequence::Refresh);
+    m_toolBar->addAction(m_refreshAction);
+    
+    m_toolBar->addSeparator();
+    
+    // 路径编辑框
+    m_toolBar->addWidget(new QLabel(tr("路径:")));
+    m_pathEdit = new QLineEdit(this);
+    m_pathEdit->setMinimumWidth(300);
+    m_pathEdit->setPlaceholderText(tr("输入路径并按回车"));
+    m_toolBar->addWidget(m_pathEdit);
+    
+    m_toolBar->addSeparator();
+    
+    // 排序下拉框
+    m_toolBar->addWidget(new QLabel(tr("排序:")));
+    m_sortCombo = new QComboBox(this);
+    m_sortCombo->addItem(tr("名称 (A-Z)"), static_cast<int>(SortByName) | (Ascending << 8));
+    m_sortCombo->addItem(tr("名称 (Z-A)"), static_cast<int>(SortByName) | (Descending << 8));
+    m_sortCombo->addItem(tr("修改时间 (旧→新)"), static_cast<int>(SortByModified) | (Ascending << 8));
+    m_sortCombo->addItem(tr("修改时间 (新→旧)"), static_cast<int>(SortByModified) | (Descending << 8));
+    m_sortCombo->addItem(tr("创建时间 (旧→新)"), static_cast<int>(SortByCreated) | (Ascending << 8));
+    m_sortCombo->addItem(tr("创建时间 (新→旧)"), static_cast<int>(SortByCreated) | (Descending << 8));
+    m_sortCombo->addItem(tr("大小 (小→大)"), static_cast<int>(SortBySize) | (Ascending << 8));
+    m_sortCombo->addItem(tr("大小 (大→小)"), static_cast<int>(SortBySize) | (Descending << 8));
+    m_sortCombo->addItem(tr("类型 (A-Z)"), static_cast<int>(SortByType) | (Ascending << 8));
+    m_sortCombo->addItem(tr("类型 (Z-A)"), static_cast<int>(SortByType) | (Descending << 8));
+    m_toolBar->addWidget(m_sortCombo);
+    
+    m_toolBar->addSeparator();
+    
+    // 分组下拉框
+    m_toolBar->addWidget(new QLabel(tr("分组:")));
+    m_groupCombo = new QComboBox(this);
+    m_groupCombo->addItem(tr("无分组"), static_cast<int>(NoGrouping));
+    m_groupCombo->addItem(tr("按类型分组"), static_cast<int>(GroupByType) | (Ascending << 8));
+    m_groupCombo->addItem(tr("按修改时间分组"), static_cast<int>(GroupByModifiedTime) | (Ascending << 8));
+    m_groupCombo->addItem(tr("按创建时间分组"), static_cast<int>(GroupByCreatedTime) | (Ascending << 8));
+    m_groupCombo->addItem(tr("按名称分组"), static_cast<int>(GroupByName) | (Ascending << 8));
+    m_groupCombo->addItem(tr("按大小分组"), static_cast<int>(GroupBySize) | (Ascending << 8));
+    m_toolBar->addWidget(m_groupCombo);
+}
+
+void UnifiedFileBrowser::setupStatusBar()
+{
+    // 路径标签
+    m_pathLabel = new QLabel(this);
+    m_pathLabel->setMinimumWidth(200);
+    statusBar()->addWidget(m_pathLabel);
+    
+    statusBar()->addPermanentWidget(new QLabel(" | "));
+    
+    // 项目计数标签
+    m_itemCountLabel = new QLabel(this);
+    m_itemCountLabel->setMinimumWidth(100);
+    statusBar()->addPermanentWidget(m_itemCountLabel);
+    
+    statusBar()->addPermanentWidget(new QLabel(" | "));
+    
+    // 选择标签
+    m_selectionLabel = new QLabel(this);
+    m_selectionLabel->setMinimumWidth(120);
+    statusBar()->addPermanentWidget(m_selectionLabel);
+    
+    // 加载进度条
+    m_loadingProgress = new QProgressBar(this);
+    m_loadingProgress->setVisible(false);
+    m_loadingProgress->setMaximumWidth(150);
+    statusBar()->addPermanentWidget(m_loadingProgress);
+}
+
+void UnifiedFileBrowser::setupContextMenu()
+{
+    m_contextMenu = new QMenu(this);
+    
+    m_openAction = new QAction(tr("打开"), this);
+    m_openAction->setIcon(style()->standardIcon(QStyle::SP_DirOpenIcon));
+    m_contextMenu->addAction(m_openAction);
+    
+    m_contextMenu->addSeparator();
+    
+    m_copyAction = new QAction(tr("复制"), this);
+    m_copyAction->setShortcut(QKeySequence::Copy);
+    m_contextMenu->addAction(m_copyAction);
+    
+    m_cutAction = new QAction(tr("剪切"), this);
+    m_cutAction->setShortcut(QKeySequence::Cut);
+    m_contextMenu->addAction(m_cutAction);
+    
+    m_pasteAction = new QAction(tr("粘贴"), this);
+    m_pasteAction->setShortcut(QKeySequence::Paste);
+    m_contextMenu->addAction(m_pasteAction);
+    
+    m_contextMenu->addSeparator();
+    
+    m_deleteAction = new QAction(tr("删除"), this);
+    m_deleteAction->setShortcut(QKeySequence::Delete);
+    m_contextMenu->addAction(m_deleteAction);
+    
+    m_contextMenu->addSeparator();
+    
+    m_propertiesAction = new QAction(tr("属性"), this);
+    m_contextMenu->addAction(m_propertiesAction);
+}
+
+void UnifiedFileBrowser::setupConnections()
+{
+    // 工具栏连接
+    connect(m_homeAction, &QAction::triggered, this, &UnifiedFileBrowser::goHome);
+    connect(m_upAction, &QAction::triggered, this, &UnifiedFileBrowser::goUp);
+    connect(m_refreshAction, &QAction::triggered, this, &UnifiedFileBrowser::refreshCurrentDirectory);
+    connect(m_pathEdit, &QLineEdit::returnPressed, this, &UnifiedFileBrowser::onPathEditChanged);
+    connect(m_sortCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &UnifiedFileBrowser::onSortComboChanged);
+    connect(m_groupCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &UnifiedFileBrowser::onGroupComboChanged);
+    
+    // 文件列表连接
+    connect(m_fileList, &QListWidget::itemDoubleClicked, this, &UnifiedFileBrowser::onItemDoubleClicked);
+    connect(m_fileList, &QListWidget::itemSelectionChanged, this, &UnifiedFileBrowser::onItemSelectionChanged);
+    connect(m_fileList, &QListWidget::customContextMenuRequested, this, &UnifiedFileBrowser::onCustomContextMenu);
+    
+    // 上下文菜单连接
+    connect(m_openAction, &QAction::triggered, this, &UnifiedFileBrowser::openSelectedItems);
+    connect(m_copyAction, &QAction::triggered, this, &UnifiedFileBrowser::copySelectedItems);
+    connect(m_cutAction, &QAction::triggered, this, &UnifiedFileBrowser::cutSelectedItems);
+    connect(m_pasteAction, &QAction::triggered, this, &UnifiedFileBrowser::pasteItems);
+    connect(m_deleteAction, &QAction::triggered, this, &UnifiedFileBrowser::deleteSelectedItems);
+    connect(m_propertiesAction, &QAction::triggered, this, &UnifiedFileBrowser::showItemProperties);
+    
+    // 文件系统监控连接
+    connect(m_watcher, &QFileSystemWatcher::directoryChanged, this, &UnifiedFileBrowser::onDirectoryChanged);
+    connect(m_watcher, &QFileSystemWatcher::fileChanged, this, &UnifiedFileBrowser::onFileChanged);
+    
+    // 加载定时器连接
+    connect(m_loadingTimer, &QTimer::timeout, this, &UnifiedFileBrowser::onLoadingFinished);
+}
+
+void UnifiedFileBrowser::navigateToPath(const QString& path)
+{
+    if (path.isEmpty() || !QDir(path).exists()) {
+        QMessageBox::warning(this, tr("错误"), tr("目录不存在: %1").arg(path));
+        return;
+    }
+    
+    m_currentPath = QDir(path).absolutePath();
+    m_pathEdit->setText(m_currentPath);
+    
+    // 更新文件系统监控
+    if (!m_watcher->directories().isEmpty()) {
+        m_watcher->removePaths(m_watcher->directories());
+    }
+    m_watcher->addPath(m_currentPath);
+    
+    loadDirectory(m_currentPath);
+}
+
+void UnifiedFileBrowser::refreshCurrentDirectory()
+{
+    if (!m_currentPath.isEmpty()) {
+        loadDirectory(m_currentPath);
+    }
+}
+
+void UnifiedFileBrowser::goHome()
+{
+    QString homePath = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
+    navigateToPath(homePath);
+}
+
+void UnifiedFileBrowser::goUp()
+{
+    if (m_currentPath.isEmpty()) return;
+    
+    QDir dir(m_currentPath);
+    if (dir.cdUp()) {
+        navigateToPath(dir.absolutePath());
+    }
+}
+
+void UnifiedFileBrowser::loadDirectory(const QString& path)
+{
+    m_loadingProgress->setVisible(true);
+    m_loadingProgress->setRange(0, 0); // 无限进度条
+    
+    // 异步加载目录
+    QFuture<void> future = QtConcurrent::run([this, path]() {
+        QDir dir(path);
+        dir.setFilter(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot);
+        dir.setSorting(QDir::Name);
+        
+        QFileInfoList fileInfos = dir.entryInfoList();
+        
+        QMutexLocker locker(&m_dataMutex);
+        m_allFiles.clear();
+        
+        for (const QFileInfo& info : fileInfos) {
+            SimpleFileItem item(info);
+            if (m_iconProvider) {
+                item.icon = m_iconProvider->icon(info);
+            }
+            m_allFiles.append(item);
+        }
+    });
+    
+    // 监控完成
+    QFutureWatcher<void>* watcher = new QFutureWatcher<void>(this);
+    connect(watcher, &QFutureWatcher<void>::finished, [this, watcher]() {
+        watcher->deleteLater();
+        organizeFiles();
+        updateDisplay();
+        updateStatusBar();
+        m_loadingProgress->setVisible(false);
+    });
+    watcher->setFuture(future);
+}
+
+void UnifiedFileBrowser::organizeFiles()
+{
+    m_displayFiles = m_allFiles;
+    
+    // 应用分组
+    if (m_currentGroupType != NoGrouping) {
+        applyGrouping();
+    }
+    
+    // 应用排序
+    applySorting();
+}
+
+void UnifiedFileBrowser::applyGrouping()
+{
+    switch (m_currentGroupType) {
+        case GroupByType:
+            groupFilesByType(m_displayFiles, m_currentGroupOrder);
+            break;
+        case GroupByModifiedTime:
+            groupFilesByModifiedTime(m_displayFiles, m_currentGroupOrder);
+            break;
+        case GroupByCreatedTime:
+            groupFilesByCreatedTime(m_displayFiles, m_currentGroupOrder);
+            break;
+        case GroupByName:
+            groupFilesByName(m_displayFiles, m_currentGroupOrder);
+            break;
+        case GroupBySize:
+            groupFilesBySize(m_displayFiles, m_currentGroupOrder);
+            break;
+        default:
+            break;
+    }
+}
+
+void UnifiedFileBrowser::applySorting()
+{
+    switch (m_currentSortType) {
+        case SortByName:
+            sortFilesByName(m_displayFiles, m_currentSortOrder);
+            break;
+        case SortByModified:
+            sortFilesByModified(m_displayFiles, m_currentSortOrder);
+            break;
+        case SortByCreated:
+            sortFilesByCreated(m_displayFiles, m_currentSortOrder);
+            break;
+        case SortBySize:
+            sortFilesBySize(m_displayFiles, m_currentSortOrder);
+            break;
+        case SortByType:
+            sortFilesByType(m_displayFiles, m_currentSortOrder);
+            break;
+    }
+}
+
+void UnifiedFileBrowser::updateDisplay()
+{
+    clearDisplay();
+    
+    if (m_currentGroupType == NoGrouping) {
+        // 无分组显示
+        for (const SimpleFileItem& item : m_displayFiles) {
+            addFileItem(item);
+        }
+    } else {
+        // 分组显示
+        QMap<QString, QList<SimpleFileItem>> groups;
+        for (const SimpleFileItem& item : m_displayFiles) {
+            groups[item.group].append(item);
+        }
+        
+        for (auto it = groups.begin(); it != groups.end(); ++it) {
+            addGroupHeader(it.key(), it.value().size());
+            for (const SimpleFileItem& item : it.value()) {
+                addFileItem(item);
+            }
+        }
+    }
+}
+
+void UnifiedFileBrowser::clearDisplay()
+{
+    m_fileList->clear();
+}
+
+void UnifiedFileBrowser::addGroupHeader(const QString& groupName, int itemCount)
+{
+    QListWidgetItem* headerItem = new QListWidgetItem(m_fileList);
+    headerItem->setText(QString("%1 (%2)").arg(groupName).arg(itemCount));
+    headerItem->setData(Qt::UserRole, "group_header");
+    headerItem->setData(Qt::UserRole + 1, groupName);
+    
+    // 设置样式
+    QFont font = headerItem->font();
+    font.setBold(true);
+    font.setPointSize(font.pointSize() + 1);
+    headerItem->setFont(font);
+    headerItem->setBackground(QColor(230, 230, 230));
+    headerItem->setFlags(Qt::ItemIsEnabled); // 不可选择
+}
+
+void UnifiedFileBrowser::addFileItem(const SimpleFileItem& item)
+{
+    QListWidgetItem* listItem = new QListWidgetItem(m_fileList);
+    
+    // 设置显示文本
+    QString displayText = QString("%1\t%2\t%3\t%4")
+        .arg(item.name, -30)
+        .arg(item.formatTime(item.modified), -20)
+        .arg(item.formatSize(), -10)
+        .arg(item.type, -10);
+    
+    listItem->setText(displayText);
+    listItem->setIcon(item.icon);
+    listItem->setData(Qt::UserRole, "file_item");
+    listItem->setData(Qt::UserRole + 1, item.path);
+    listItem->setData(Qt::UserRole + 2, item.isDirectory);
+    
+    // 目录使用不同的样式
+    if (item.isDirectory) {
+        QFont font = listItem->font();
+        font.setBold(true);
+        listItem->setFont(font);
+    }
+}
+
+void UnifiedFileBrowser::updateStatusBar()
+{
+    // 更新路径
+    QString displayPath = m_currentPath;
+    if (displayPath.length() > 50) {
+        displayPath = "..." + displayPath.right(47);
+    }
+    m_pathLabel->setText(displayPath);
+    m_pathLabel->setToolTip(m_currentPath);
+    
+    // 更新项目数量
+    m_itemCountLabel->setText(tr("%1 项").arg(m_allFiles.size()));
+    
+    // 更新选择信息
+    int selectedCount = m_fileList->selectedItems().size();
+    if (selectedCount > 0) {
+        m_selectionLabel->setText(tr("已选择 %1 项").arg(selectedCount));
+    } else {
+        m_selectionLabel->setText(tr("未选择"));
+    }
+}
+
+// 排序实现
+void UnifiedFileBrowser::sortFilesByName(QList<SimpleFileItem>& files, SortOrder order)
+{
+    std::sort(files.begin(), files.end(), [order](const SimpleFileItem& a, const SimpleFileItem& b) {
+        // 目录总是在前面
+        if (a.isDirectory != b.isDirectory) {
+            return a.isDirectory;
+        }
+        
+        bool result = a.name.toLower() < b.name.toLower();
+        return order == Ascending ? result : !result;
+    });
+}
+
+void UnifiedFileBrowser::sortFilesByModified(QList<SimpleFileItem>& files, SortOrder order)
+{
+    std::sort(files.begin(), files.end(), [order](const SimpleFileItem& a, const SimpleFileItem& b) {
+        if (a.isDirectory != b.isDirectory) {
+            return a.isDirectory;
+        }
+        
+        bool result = a.modified < b.modified;
+        return order == Ascending ? result : !result;
+    });
+}
+
+void UnifiedFileBrowser::sortFilesByCreated(QList<SimpleFileItem>& files, SortOrder order)
+{
+    std::sort(files.begin(), files.end(), [order](const SimpleFileItem& a, const SimpleFileItem& b) {
+        if (a.isDirectory != b.isDirectory) {
+            return a.isDirectory;
+        }
+        
+        bool result = a.created < b.created;
+        return order == Ascending ? result : !result;
+    });
+}
+
+void UnifiedFileBrowser::sortFilesBySize(QList<SimpleFileItem>& files, SortOrder order)
+{
+    std::sort(files.begin(), files.end(), [order](const SimpleFileItem& a, const SimpleFileItem& b) {
+        if (a.isDirectory != b.isDirectory) {
+            return a.isDirectory;
+        }
+        
+        bool result = a.size < b.size;
+        return order == Ascending ? result : !result;
+    });
+}
+
+void UnifiedFileBrowser::sortFilesByType(QList<SimpleFileItem>& files, SortOrder order)
+{
+    std::sort(files.begin(), files.end(), [order](const SimpleFileItem& a, const SimpleFileItem& b) {
+        if (a.isDirectory != b.isDirectory) {
+            return a.isDirectory;
+        }
+        
+        bool result = a.type < b.type;
+        return order == Ascending ? result : !result;
+    });
+}
+
+// 分组实现
+void UnifiedFileBrowser::groupFilesByType(QList<SimpleFileItem>& files, SortOrder order)
+{
+    Q_UNUSED(order); // 暂时不使用排序参数
+    for (SimpleFileItem& item : files) {
+        item.group = getTypeGroup(item.type);
+    }
+}
+
+void UnifiedFileBrowser::groupFilesByModifiedTime(QList<SimpleFileItem>& files, SortOrder order)
+{
+    Q_UNUSED(order);
+    for (SimpleFileItem& item : files) {
+        item.group = getTimeGroup(item.modified);
+    }
+}
+
+void UnifiedFileBrowser::groupFilesByCreatedTime(QList<SimpleFileItem>& files, SortOrder order)
+{
+    Q_UNUSED(order);
+    for (SimpleFileItem& item : files) {
+        item.group = getTimeGroup(item.created);
+    }
+}
+
+void UnifiedFileBrowser::groupFilesByName(QList<SimpleFileItem>& files, SortOrder order)
+{
+    Q_UNUSED(order);
+    for (SimpleFileItem& item : files) {
+        item.group = getNameGroup(item.name);
+    }
+}
+
+void UnifiedFileBrowser::groupFilesBySize(QList<SimpleFileItem>& files, SortOrder order)
+{
+    Q_UNUSED(order);
+    for (SimpleFileItem& item : files) {
+        item.group = getSizeGroup(item.size, item.isDirectory);
+    }
+}
+
+// 工具函数实现
+QString UnifiedFileBrowser::getTypeGroup(const QString& type) const
+{
+    if (type == "Directory") return tr("目录");
+    if (type.isEmpty()) return tr("无扩展名");
+    
+    QString lowerType = type.toLower();
+    if (lowerType == "txt" || lowerType == "md" || lowerType == "doc" || lowerType == "docx") {
+        return tr("文档");
+    } else if (lowerType == "jpg" || lowerType == "png" || lowerType == "gif" || lowerType == "bmp") {
+        return tr("图片");
+    } else if (lowerType == "mp3" || lowerType == "wav" || lowerType == "flac") {
+        return tr("音频");
+    } else if (lowerType == "mp4" || lowerType == "avi" || lowerType == "mkv") {
+        return tr("视频");
+    } else {
+        return tr("其他");
+    }
+}
+
+QString UnifiedFileBrowser::getTimeGroup(const QDateTime& time) const
+{
+    if (!time.isValid()) return tr("未知时间");
+    
+    QDate today = QDate::currentDate();
+    QDate fileDate = time.date();
+    
+    int daysTo = fileDate.daysTo(today);
+    
+    if (daysTo == 0) return tr("今天");
+    if (daysTo == 1) return tr("昨天");
+    if (daysTo <= 7) return tr("本周");
+    if (daysTo <= 30) return tr("本月");
+    if (daysTo <= 365) return tr("今年");
+    
+    return tr("更早");
+}
+
+QString UnifiedFileBrowser::getNameGroup(const QString& name) const
+{
+    if (name.isEmpty()) return tr("其他");
+    
+    QChar first = name.at(0).toUpper();
+    if (first >= '0' && first <= '9') return tr("数字");
+    if (first >= 'A' && first <= 'Z') return QString(first);
+    
+    return tr("其他");
+}
+
+QString UnifiedFileBrowser::getSizeGroup(qint64 size, bool isDirectory) const
+{
+    if (isDirectory) return tr("目录");
+    if (size < 0) return tr("未知大小");
+    if (size == 0) return tr("空文件");
+    if (size < 1024) return tr("小文件 (<1KB)");
+    if (size < 1024 * 1024) return tr("中等文件 (<1MB)");
+    if (size < 100 * 1024 * 1024) return tr("大文件 (<100MB)");
+    
+    return tr("巨大文件 (≥100MB)");
+}
+
+// 槽函数实现
+void UnifiedFileBrowser::onPathEditChanged()
+{
+    QString path = m_pathEdit->text().trimmed();
+    if (path.isEmpty()) return;
+    
+    // 展开 ~ 到主目录
+    if (path.startsWith("~")) {
+        path = QStandardPaths::writableLocation(QStandardPaths::HomeLocation) + path.mid(1);
+    }
+    
+    navigateToPath(path);
+}
+
+void UnifiedFileBrowser::onItemDoubleClicked()
+{
+    QListWidgetItem* item = m_fileList->currentItem();
+    if (!item) return;
+    
+    QString itemType = item->data(Qt::UserRole).toString();
+    if (itemType == "file_item") {
+        QString filePath = item->data(Qt::UserRole + 1).toString();
+        bool isDirectory = item->data(Qt::UserRole + 2).toBool();
+        
+        if (isDirectory) {
+            navigateToPath(filePath);
+        } else {
+            QDesktopServices::openUrl(QUrl::fromLocalFile(filePath));
+        }
+    }
+}
+
+void UnifiedFileBrowser::onItemSelectionChanged()
+{
+    updateStatusBar();
+    
+    // 更新剪贴板相关动作的状态
+    QClipboard* clipboard = QApplication::clipboard();
+    m_pasteAction->setEnabled(!clipboard->text().isEmpty() || !m_clipboardPaths.isEmpty());
+}
+
+void UnifiedFileBrowser::onSortComboChanged()
+{
+    int data = m_sortCombo->currentData().toInt();
+    SortType sortType = static_cast<SortType>(data & 0xFF);
+    SortOrder sortOrder = static_cast<SortOrder>((data >> 8) & 0xFF);
+    
+    setSortType(sortType, sortOrder);
+}
+
+void UnifiedFileBrowser::onGroupComboChanged()
+{
+    int data = m_groupCombo->currentData().toInt();
+    GroupType groupType = static_cast<GroupType>(data & 0xFF);
+    SortOrder groupOrder = static_cast<SortOrder>((data >> 8) & 0xFF);
+    
+    setGroupType(groupType, groupOrder);
+}
+
+void UnifiedFileBrowser::onCustomContextMenu(const QPoint& point)
+{
+    // 根据是否有选中项来启用/禁用菜单项
+    bool hasSelection = !m_fileList->selectedItems().isEmpty();
+    m_openAction->setEnabled(hasSelection);
+    m_copyAction->setEnabled(hasSelection);
+    m_cutAction->setEnabled(hasSelection);
+    m_deleteAction->setEnabled(hasSelection);
+    m_propertiesAction->setEnabled(hasSelection);
+    
+    m_contextMenu->exec(m_fileList->mapToGlobal(point));
+}
+
+void UnifiedFileBrowser::onDirectoryChanged(const QString& path)
+{
+    if (path == m_currentPath) {
+        refreshCurrentDirectory();
+    }
+}
+
+void UnifiedFileBrowser::onFileChanged(const QString& path)
+{
+    Q_UNUSED(path);
+    refreshCurrentDirectory();
+}
+
+void UnifiedFileBrowser::onLoadingFinished()
+{
+    m_loadingProgress->setVisible(false);
+}
+
+void UnifiedFileBrowser::setSortType(SortType type, SortOrder order)
+{
+    m_currentSortType = type;
+    m_currentSortOrder = order;
+    organizeFiles();
+    updateDisplay();
+}
+
+void UnifiedFileBrowser::setGroupType(GroupType type, SortOrder order)
+{
+    m_currentGroupType = type;
+    m_currentGroupOrder = order;
+    organizeFiles();
+    updateDisplay();
+}
+
+// 上下文菜单动作实现
+void UnifiedFileBrowser::openSelectedItems()
+{
+    QList<QListWidgetItem*> selectedItems = m_fileList->selectedItems();
+    for (QListWidgetItem* item : selectedItems) {
+        if (item->data(Qt::UserRole).toString() == "file_item") {
+            QString filePath = item->data(Qt::UserRole + 1).toString();
+            QDesktopServices::openUrl(QUrl::fromLocalFile(filePath));
+        }
+    }
+}
+
+void UnifiedFileBrowser::showItemProperties()
+{
+    QList<QListWidgetItem*> selectedItems = m_fileList->selectedItems();
+    if (selectedItems.isEmpty()) return;
+    
+    QListWidgetItem* item = selectedItems.first();
+    if (item->data(Qt::UserRole).toString() != "file_item") return;
+    
+    QString filePath = item->data(Qt::UserRole + 1).toString();
+    QFileInfo info(filePath);
+    
+    QString properties = tr("属性信息\n\n");
+    properties += tr("名称: %1\n").arg(info.fileName());
+    properties += tr("路径: %1\n").arg(info.absolutePath());
+    properties += tr("大小: %1\n").arg(SimpleFileItem(info).formatSize());
+    properties += tr("修改时间: %1\n").arg(info.lastModified().toString());
+    properties += tr("创建时间: %1\n").arg(info.birthTime().toString());
+    properties += tr("类型: %1\n").arg(info.isDir() ? tr("目录") : info.suffix());
+    
+    QMessageBox::information(this, tr("属性"), properties);
+}
+
+void UnifiedFileBrowser::deleteSelectedItems()
+{
+    QList<QListWidgetItem*> selectedItems = m_fileList->selectedItems();
+    if (selectedItems.isEmpty()) return;
+    
+    QStringList filePaths;
+    for (QListWidgetItem* item : selectedItems) {
+        if (item->data(Qt::UserRole).toString() == "file_item") {
+            filePaths.append(item->data(Qt::UserRole + 1).toString());
+        }
+    }
+    
+    if (filePaths.isEmpty()) return;
+    
+    int ret = QMessageBox::question(this, tr("确认删除"), 
+        tr("确定要删除选中的 %1 个项目吗？").arg(filePaths.size()),
+        QMessageBox::Yes | QMessageBox::No);
+    
+    if (ret == QMessageBox::Yes) {
+        for (const QString& filePath : filePaths) {
+            QFileInfo info(filePath);
+            if (info.isDir()) {
+                QDir().rmdir(filePath);
+            } else {
+                QFile::remove(filePath);
+            }
+        }
+        refreshCurrentDirectory();
+    }
+}
+
+void UnifiedFileBrowser::copySelectedItems()
+{
+    QList<QListWidgetItem*> selectedItems = m_fileList->selectedItems();
+    if (selectedItems.isEmpty()) return;
+    
+    m_clipboardPaths.clear();
+    for (QListWidgetItem* item : selectedItems) {
+        if (item->data(Qt::UserRole).toString() == "file_item") {
+            m_clipboardPaths.append(item->data(Qt::UserRole + 1).toString());
+        }
+    }
+    
+    m_clipboardAction = "copy";
+}
+
+void UnifiedFileBrowser::cutSelectedItems()
+{
+    QList<QListWidgetItem*> selectedItems = m_fileList->selectedItems();
+    if (selectedItems.isEmpty()) return;
+    
+    m_clipboardPaths.clear();
+    for (QListWidgetItem* item : selectedItems) {
+        if (item->data(Qt::UserRole).toString() == "file_item") {
+            m_clipboardPaths.append(item->data(Qt::UserRole + 1).toString());
+        }
+    }
+    
+    m_clipboardAction = "cut";
+}
+
+void UnifiedFileBrowser::pasteItems()
+{
+    if (m_clipboardPaths.isEmpty()) return;
+    
+    for (const QString& sourcePath : m_clipboardPaths) {
+        QFileInfo sourceInfo(sourcePath);
+        QString targetPath = m_currentPath + "/" + sourceInfo.fileName();
+        
+        if (m_clipboardAction == "copy") {
+            if (sourceInfo.isDir()) {
+                // 复制目录（简化实现）
+                QDir().mkpath(targetPath);
+            } else {
+                QFile::copy(sourcePath, targetPath);
+            }
+        } else if (m_clipboardAction == "cut") {
+            QFile::rename(sourcePath, targetPath);
+        }
+    }
+    
+    if (m_clipboardAction == "cut") {
+        m_clipboardPaths.clear();
+    }
+    
+    refreshCurrentDirectory();
+}
+
+
