@@ -49,7 +49,8 @@ Build-Depends:
  libopenjp2-7-dev,
  liblcms2-dev,
  libdeepin-service-framework-dev,
- libheif-dev
+ libheif-dev,
+ libappimage-dev
 Standards-Version: 3.9.8
 Homepage: http://www.deepin.org
 
@@ -109,6 +110,7 @@ Depends:
  libpoppler-cpp0v5 (>= 0.48.0),
  gvfs-backends (>=1.27.3),
  cryptsetup,
+ gnome-keyring,
  libdfm-extension (=${binary:Version}),
  dlnfs | hello
 Multi-Arch: same

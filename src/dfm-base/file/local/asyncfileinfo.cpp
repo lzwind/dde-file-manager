@@ -72,7 +72,7 @@ void AsyncFileInfo::refresh()
 
     {
         FileInfoHelper::instance().fileRefreshAsync(sharedFromThis());
-        QWriteLocker locker(&d->lock);
+        QMutexLocker locker(&d->lock);
         d->fileCountFuture.reset(nullptr);
         d->updateFileCountFuture.reset(nullptr);
         d->mediaFuture.reset(nullptr);
@@ -89,7 +89,7 @@ void AsyncFileInfo::refresh()
 
 void AsyncFileInfo::cacheAttribute(DFileInfo::AttributeID id, const QVariant &value)
 {
-    QWriteLocker locker(&d->lock);
+    QMutexLocker locker(&d->lock);
     d->cacheAsyncAttributes.insert(static_cast<FileInfo::FileInfoAttributeID>(id), value);
 }
 
@@ -168,9 +168,9 @@ QUrl AsyncFileInfo::urlOf(const UrlInfoType type) const
         auto originalUri = d->asyncAttribute(FileInfo::FileInfoAttributeID::kOriginalUri);
         if (originalUri.isValid())
             return QUrl(originalUri.toString());
-        auto tmp = d->dfmFileInfo;
-        if (tmp) {
-            return QUrl(tmp->attribute(DFileInfo::AttributeID::kOriginalUri).toString());
+        QMutexLocker lk(&d->lock);
+        if (d->dfmFileInfo) {
+            return QUrl(d->dfmFileInfo->attribute(DFileInfo::AttributeID::kOriginalUri).toString());
         } else {
             return FileInfo::urlOf(type);
         }
@@ -366,17 +366,15 @@ int AsyncFileInfo::countChildFile() const
 int AsyncFileInfo::countChildFileAsync() const
 {
     if (isAttributes(FileIsType::kIsDir)) {
-        QReadLocker rlocker(&d->lock);
+        QMutexLocker locker(&d->lock);
         if (!d->fileCountFuture && !d->updateFileCountFuture) {
-            rlocker.unlock();
+            locker.unlock();
             auto future = FileInfoHelper::instance().fileCountAsync(const_cast<AsyncFileInfo *>(this)->url);
-            QWriteLocker wlocker(&d->lock);
+            locker.relock();
             d->fileCountFuture = future;
         } else if (d->fileCountFuture && (!d->updateFileCountFuture || !d->updateFileCountFuture->finish)) {
             return d->fileCountFuture->finish ? d->fileCountFuture->data.toInt() : -1;
         } else if (!d->fileCountFuture && d->updateFileCountFuture) {
-            rlocker.unlock();
-            QWriteLocker wlocker(&d->lock);
             d->fileCountFuture = d->updateFileCountFuture;
             d->updateFileCountFuture.reset(nullptr);
             return d->fileCountFuture->finish ? d->fileCountFuture->data.toInt() : -1;
@@ -425,7 +423,7 @@ QIcon AsyncFileInfo::fileIcon()
 QMimeType AsyncFileInfo::fileMimeType(QMimeDatabase::MatchMode mode)
 {
     Q_UNUSED(mode);
-    QReadLocker locker(&d->lock);
+    QMutexLocker locker(&d->lock);
     return d->mimeType;
 }
 
@@ -459,9 +457,9 @@ QVariant AsyncFileInfo::customAttribute(const char *key, const DFileInfo::DFileA
 {
     if (d->queringAttribute || d->cacheingAttributes)
         return QVariant();
-    auto tmpDfmFileInfo = d->dfmFileInfo;
-    if (tmpDfmFileInfo && tmpDfmFileInfo->queryAttributeFinished())
-        return tmpDfmFileInfo->customAttribute(key, type);
+    QMutexLocker lk(&d->lock);
+    if (d->dfmFileInfo && d->dfmFileInfo->queryAttributeFinished())
+        return d->dfmFileInfo->customAttribute(key, type);
 
     return QVariant();
 }
@@ -525,7 +523,7 @@ void AsyncFileInfo::updateAttributes(const QList<FileInfo::FileInfoAttributeID> 
         typeAll.append(FileInfoAttributeID::kStandardIcon);
 
         typeAll.append(FileInfoAttributeID::kStandardSize);
-        QReadLocker rlk(&d->lock);
+        QMutexLocker rlk(&d->lock);
         d->needUpdateMediaInfo = !d->attributesExtend.isEmpty();
     }
     // 更新缩略图
@@ -537,13 +535,13 @@ void AsyncFileInfo::updateAttributes(const QList<FileInfo::FileInfoAttributeID> 
     // 更新filecount
     if (typeAll.contains(FileInfoAttributeID::kFileCount)) {
         typeAll.removeOne(FileInfoAttributeID::kFileCount);
-        QReadLocker rlocker(&d->lock);
+        QMutexLocker locker(&d->lock);
         if (d->fileCountFuture
             && d->fileCountFuture->finish
             && (!d->updateFileCountFuture || d->updateFileCountFuture->finish)) {
-            rlocker.unlock();
+            locker.unlock();
             auto future = FileInfoHelper::instance().fileCountAsync(const_cast<AsyncFileInfo *>(this)->url);
-            QWriteLocker wlocker(&d->lock);
+            locker.relock();
             d->updateFileCountFuture = future;
         }
     }
@@ -556,7 +554,7 @@ void AsyncFileInfo::updateAttributes(const QList<FileInfo::FileInfoAttributeID> 
             DFileInfo::MediaType mediaType { DFileInfo::MediaType::kGeneral };
             QList<DFileInfo::AttributeExtendID> extendIDs;
             {
-                QReadLocker lk(&d->lock);
+                QMutexLocker lk(&d->lock);
                 mediaType = d->mediaType;
                 extendIDs = d->extendIDs;
             }
@@ -577,7 +575,7 @@ void AsyncFileInfo::updateAttributes(const QList<FileInfo::FileInfoAttributeID> 
 
 QMultiMap<QUrl, QString> AsyncFileInfo::notifyUrls() const
 {
-    QReadLocker lk(&const_cast<AsyncFileInfoPrivate *>(d.data())->notifyLock);
+    QMutexLocker lk(&const_cast<AsyncFileInfoPrivate *>(d.data())->notifyLock);
     return d->notifyUrls;
 }
 // if url is unvalid, it will clear all notify urls
@@ -585,11 +583,11 @@ void AsyncFileInfo::setNotifyUrl(const QUrl &url, const QString &infoPtr)
 {
     assert(infoPtr != QString::number(quintptr(this), 16));
     if (!url.isValid()) {
-        QWriteLocker lk(&d->notifyLock);
+        QMutexLocker lk(&d->notifyLock);
         d->notifyUrls.clear();
         return;
     }
-    QWriteLocker lk(&d->notifyLock);
+    QMutexLocker lk(&d->notifyLock);
     if (!d->notifyUrls.contains(url, infoPtr)) {
         d->notifyUrls.insert(url, infoPtr);
     }
@@ -597,16 +595,18 @@ void AsyncFileInfo::setNotifyUrl(const QUrl &url, const QString &infoPtr)
 
 void AsyncFileInfo::removeNotifyUrl(const QUrl &url, const QString &infoPtr)
 {
-    QWriteLocker lk(&d->notifyLock);
+    QMutexLocker lk(&d->notifyLock);
     d->notifyUrls.remove(url, infoPtr);
 }
 
 int AsyncFileInfo::cacheAsyncAttributes(const QString &attributes)
 {
     assert(qApp->thread() != QThread::currentThread());
-    auto dfmFileInfo = d->dfmFileInfo;
-    if (d->tokenKey != quintptr(dfmFileInfo.data()))
-        return -1;
+    {
+        QMutexLocker lk(&d->lock);
+        if (d->tokenKey != quintptr(d->dfmFileInfo.data()))
+            return -1;
+    }
 
     if (d->cacheingAttributes)
         return 0;
@@ -622,15 +622,27 @@ bool AsyncFileInfo::asyncQueryDfmFileInfo(int ioPriority, FileInfo::initQuerierA
 {
     if (d->queringAttribute)
         return false;
+    bool dfmNull = false;
     d->queringAttribute = true;
-    if (!d->notInit || !d->dfmFileInfo)
+    {
+        QMutexLocker lk(&d->lock);
+        dfmNull = d->dfmFileInfo.isNull();
+    }
+    if (!d->notInit || dfmNull)
         d->init(url);
 
     d->notInit = false;
-    if (!d->dfmFileInfo) {
+
+    {
+        QMutexLocker lk(&d->lock);
+        dfmNull = d->dfmFileInfo.isNull();
+    }
+    if (dfmNull) {
         d->queringAttribute = false;
         return false;
     }
+
+    QMutexLocker lk(&d->lock);
     d->dfmFileInfo->initQuerierAsync(ioPriority, func, userData);
     d->queringAttribute = false;
     return true;
@@ -638,9 +650,9 @@ bool AsyncFileInfo::asyncQueryDfmFileInfo(int ioPriority, FileInfo::initQuerierA
 
 int AsyncFileInfo::errorCodeFromDfmio() const
 {
-    auto dFileInfo = d->dfmFileInfo;
-    if (dFileInfo)
-        return dFileInfo->lastError();
+    QMutexLocker lk(&d->lock);
+    if (d->dfmFileInfo)
+        return d->dfmFileInfo->lastError();
     return -1;
 }
 
@@ -664,6 +676,7 @@ void AsyncFileInfoPrivate::init(const QUrl &url, QSharedPointer<DFMIO::DFileInfo
         abort();
     }
 
+    QMutexLocker locker(&lock);
     if (dfileInfo) {
         notInit = true;
         dfmFileInfo = dfileInfo;
@@ -786,14 +799,6 @@ QString AsyncFileInfoPrivate::iconName() const
 
 QString AsyncFileInfoPrivate::mimeTypeName() const
 {
-    // At present, there is no dfmio library code. For temporary repair
-    // local file use the method on v20 to obtain mimeType
-    if (ProtocolUtils::isRemoteFile(q->fileUrl())) {
-        auto contentType = asyncAttribute(FileInfo::FileInfoAttributeID::kStandardContentType).toString();
-        if (contentType.isEmpty())
-            contentType = asyncAttribute(FileInfo::FileInfoAttributeID::kStandardFastContentType).toString();
-        return contentType;
-    }
     return q->fileMimeType().name();
 }
 
@@ -869,11 +874,7 @@ QString AsyncFileInfoPrivate::filePath() const
  */
 QString AsyncFileInfoPrivate::symLinkTarget() const
 {
-    QString symLinkTarget;
-
-    if (dfmFileInfo) {
-        symLinkTarget = this->attribute(DFileInfo::AttributeID::kStandardSymlinkTarget).toString();
-    }
+    QString symLinkTarget = this->attribute(DFileInfo::AttributeID::kStandardSymlinkTarget).toString();
     // the link target may be a relative path.
     if (!symLinkTarget.startsWith(QDir::separator())) {
         auto currPath = path();
@@ -903,9 +904,8 @@ bool AsyncFileInfoPrivate::isExecutable() const
 {
     bool isExecutable = false;
     bool success = false;
-    if (dfmFileInfo) {
-        isExecutable = this->attribute(DFileInfo::AttributeID::kAccessCanExecute, &success).toBool();
-    }
+    isExecutable = this->attribute(DFileInfo::AttributeID::kAccessCanExecute, &success).toBool();
+
     if (!success) {
         qCDebug(logDFMBase) << "cannot obtain the property kAccessCanExecute of" << q->fileUrl();
 
@@ -926,17 +926,6 @@ bool AsyncFileInfoPrivate::isExecutable() const
     }
 
     return isExecutable;
-}
-
-bool AsyncFileInfoPrivate::isPrivate() const
-{
-    const QString &path = const_cast<AsyncFileInfoPrivate *>(this)->path();
-    const QString &name = fileName();
-
-    static DFMBASE_NAMESPACE::Match match("PrivateFiles");
-
-    QReadLocker locker(&const_cast<AsyncFileInfoPrivate *>(this)->lock);
-    return match.match(path, name);
 }
 
 bool AsyncFileInfoPrivate::canDelete() const
@@ -971,9 +960,6 @@ bool AsyncFileInfoPrivate::canRename() const
     bool canRename = false;
     canRename = SysInfoUtils::isRootUser();
     if (!canRename) {
-        // dir can not write, will can not rename
-        if (this->attribute(DFileInfo::AttributeID::kStandardIsDir).toBool() && !this->attribute(DFileInfo::AttributeID::kAccessCanWrite).toBool())
-            return false;
         return this->attribute(DFileInfo::AttributeID::kAccessCanRename).toBool();
     }
 
@@ -982,9 +968,6 @@ bool AsyncFileInfoPrivate::canRename() const
 
 bool AsyncFileInfoPrivate::canFetch() const
 {
-    if (isPrivate())
-        return false;
-
     bool isArchive = false;
     if (q->exists())
         isArchive = DFMBASE_NAMESPACE::MimeTypeDisplayManager::instance()->supportArchiveMimetypes().contains(DMimeDatabase().mimeTypeForFile(q->fileUrl()).name());
@@ -1008,11 +991,10 @@ QString AsyncFileInfoPrivate::sizeFormat() const
 
 QVariant AsyncFileInfoPrivate::attribute(DFileInfo::AttributeID key, bool *ok) const
 {
-    assert(qApp->thread() != QThread::currentThread());
-    auto tmp = dfmFileInfo;
-    if (tmp && tmp->queryAttributeFinished()) {
+    QMutexLocker lk(&lock);
+    if (dfmFileInfo && dfmFileInfo->queryAttributeFinished()) {
         bool getOk { false };
-        auto value = tmp->attribute(key, &getOk);
+        auto value = dfmFileInfo->attribute(key, &getOk);
         if (ok)
             *ok = getOk;
         return value;
@@ -1022,20 +1004,21 @@ QVariant AsyncFileInfoPrivate::attribute(DFileInfo::AttributeID key, bool *ok) c
 
 QVariant AsyncFileInfoPrivate::asyncAttribute(FileInfo::FileInfoAttributeID key) const
 {
-    QReadLocker lk(&const_cast<AsyncFileInfoPrivate *>(this)->lock);
+    QMutexLocker lk(&const_cast<AsyncFileInfoPrivate *>(this)->lock);
     return cacheAsyncAttributes.value(key);
 }
 
 QMap<DFileInfo::AttributeExtendID, QVariant> AsyncFileInfoPrivate::mediaInfo(DFileInfo::MediaType type, QList<DFileInfo::AttributeExtendID> ids)
 {
-    auto tmpDfmFileInfo = dfmFileInfo;
+    QSharedPointer<DFileInfo> tmpDfmFileInfo;
     {
-        QWriteLocker wlocker(&lock);
+        QMutexLocker wlocker(&lock);
+        tmpDfmFileInfo = dfmFileInfo;
         mediaType = type;
         extendIDs = ids;
     }
     if (tmpDfmFileInfo && tmpDfmFileInfo->queryAttributeFinished() && !queringAttribute) {
-        QReadLocker rlocker(&lock);
+        QMutexLocker rlocker(&lock);
         auto it = ids.begin();
         while (it != ids.end()) {
             if (attributesExtend.count(*it))
@@ -1050,7 +1033,7 @@ QMap<DFileInfo::AttributeExtendID, QVariant> AsyncFileInfoPrivate::mediaInfo(DFi
         needUpdateMediaInfo = true;
     }
 
-    QReadLocker rlocker(&lock);
+    QMutexLocker rlocker(&lock);
     return attributesExtend;
 }
 
@@ -1107,7 +1090,7 @@ int AsyncFileInfoPrivate::cacheAllAttributes(const QString &attributes)
         DFileInfo::MediaType mediaType { DFileInfo::MediaType::kGeneral };
         QList<DFileInfo::AttributeExtendID> extendIDs;
         {
-            QReadLocker lk(&lock);
+            QMutexLocker lk(&lock);
             mediaType = this->mediaType;
             extendIDs = this->extendIDs;
         }
@@ -1178,9 +1161,17 @@ int AsyncFileInfoPrivate::cacheAllAttributes(const QString &attributes)
     tmp.insert(FileInfo::FileInfoAttributeID::kTimeCreated, attribute(DFileInfo::AttributeID::kTimeCreated));
     tmp.insert(FileInfo::FileInfoAttributeID::kTimeCreatedUsec, attribute(DFileInfo::AttributeID::kTimeCreatedUsec));
     tmp.insert(FileInfo::FileInfoAttributeID::kStandardFileType, QVariant::fromValue(fileType()));
-    auto tmpdfmfileinfo = dfmFileInfo;
-    if (tmpdfmfileinfo)
-        tmp.insert(FileInfo::FileInfoAttributeID::kAccessPermissions, QVariant::fromValue(tmpdfmfileinfo->permissions()));
+
+    QVariant permissionValue;
+    {
+        QMutexLocker lk(&lock);
+        if (dfmFileInfo)
+            permissionValue = QVariant::fromValue(dfmFileInfo->permissions());
+    }
+
+    if (permissionValue.isValid())
+        tmp.insert(FileInfo::FileInfoAttributeID::kAccessPermissions, permissionValue);
+
     // GenericIconName
     tmp.insert(FileInfo::FileInfoAttributeID::kStandardContentType, attribute(DFileInfo::AttributeID::kStandardContentType));
     tmp.insert(FileInfo::FileInfoAttributeID::kStandardFastContentType, attribute(DFileInfo::AttributeID::kStandardFastContentType));
@@ -1195,7 +1186,7 @@ int AsyncFileInfoPrivate::cacheAllAttributes(const QString &attributes)
     }
 
     {
-        QWriteLocker lk(&changesLock);
+        QMutexLocker lk(&changesLock);
         changesAttributes.clear();
         for (const auto &key : tmp.keys()) {
             if (insertAsyncAttribute(key, tmp.value(key)))
@@ -1214,7 +1205,7 @@ int AsyncFileInfoPrivate::cacheAllAttributes(const QString &attributes)
 
 bool AsyncFileInfoPrivate::insertAsyncAttribute(const FileInfo::FileInfoAttributeID id, const QVariant &value)
 {
-    QWriteLocker lk(&lock);
+    QMutexLocker lk(&lock);
     if (cacheAsyncAttributes.value(id) == value || !value.isValid())
         return false;
     cacheAsyncAttributes.insert(id, value);
@@ -1226,7 +1217,7 @@ void AsyncFileInfoPrivate::fileMimeTypeAsync(QMimeDatabase::MatchMode mode)
     QMimeType type;
     type = mimeTypes(q->fileUrl().path(), mode);
     {
-        QWriteLocker lk(&lock);
+        QMutexLocker lk(&lock);
         mimeType = type;
         mimeTypeMode = mode;
     }
@@ -1262,16 +1253,15 @@ QIcon AsyncFileInfoPrivate::updateIcon()
 
 void AsyncFileInfoPrivate::updateMediaInfo(const DFileInfo::MediaType type, const QList<DFileInfo::AttributeExtendID> &ids)
 {
-    if (!dfmFileInfo || !dfmFileInfo->queryAttributeFinished() || queringAttribute)
+    if (queringAttribute)
         return;
-    QReadLocker rlk(&lock);
+    QMutexLocker rlk(&lock);
+    if (!dfmFileInfo || !dfmFileInfo->queryAttributeFinished())
+        return;
+
     if (!ids.isEmpty() && !mediaFuture) {
-        rlk.unlock();
-        QWriteLocker wlk(&lock);
         mediaFuture.reset(new InfoDataFuture(dfmFileInfo->attributeExtend(type, ids, 0)));
     } else if (mediaFuture && mediaFuture->isFinished()) {
-        rlk.unlock();
-        QWriteLocker wlk(&lock);
         attributesExtend = mediaFuture->mediaInfo();
         mediaFuture.reset(nullptr);
     }
@@ -1279,7 +1269,7 @@ void AsyncFileInfoPrivate::updateMediaInfo(const DFileInfo::MediaType type, cons
 
 bool AsyncFileInfoPrivate::hasAsyncAttribute(FileInfo::FileInfoAttributeID key)
 {
-    QReadLocker lk(&lock);
+    QMutexLocker lk(&lock);
     return cacheAsyncAttributes.contains(key);
 }
 

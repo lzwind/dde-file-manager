@@ -16,9 +16,6 @@
 #include <QAbstractItemView>
 #include <QUrl>
 
-#include <iostream>
-#include <memory>
-
 #include <unistd.h>
 
 class QAbstractItemView;
@@ -51,6 +48,7 @@ public:
     Qt::DropActions supportedDragActions() const override;
     Qt::DropActions supportedDropActions() const override;
     virtual void sort(int column, Qt::SortOrder order = Qt::AscendingOrder) override;
+    void grouping(const QString &strategyName, Qt::SortOrder order);
 
     QUrl rootUrl() const;
     QModelIndex rootIndex() const;
@@ -58,10 +56,12 @@ public:
     QModelIndex setRootUrl(const QUrl &url);
     void refresh();
 
-    void doExpand(const QModelIndex &index);
-    void doCollapse(const QModelIndex &index);
+    void toggleTreeItemExpansion(const QModelIndex &index);
+    void toggleTreeItemCollapse(const QModelIndex &index);
+    void toggleGroupExpansion(const QString &groupKey);
 
     ModelState currentState() const;
+    GroupingState groupingState() const;
     FileInfoPointer fileInfo(const QModelIndex &index) const;
     QList<QUrl> getChildrenUrls() const;
     QModelIndex getIndexByUrl(const QUrl &url) const;
@@ -79,6 +79,8 @@ public:
 
     Qt::SortOrder sortOrder() const;
     DFMGLOBAL_NAMESPACE::ItemRoles sortRole() const;
+    Qt::SortOrder groupingOrder() const;
+    QString groupingStrategy() const;
 
     void setFilters(QDir::Filters filters);
     QDir::Filters getFilters() const;
@@ -96,6 +98,9 @@ public:
 
     QStringList getKeyWords();
 
+    // Get file-only count for status bar (excludes group headers)
+    int getFileOnlyCount() const;
+
     // 设置目录加载策略
     void setDirectoryLoadStrategy(DFMGLOBAL_NAMESPACE::DirectoryLoadStrategy strategy);
     DFMGLOBAL_NAMESPACE::DirectoryLoadStrategy directoryLoadStrategy() const;
@@ -106,8 +111,12 @@ public:
     // 执行实际的加载，使用之前准备的URL或当前URL
     void executeLoad();
 
+    // 设置当前正在正在更新HorizontalOffset
+    void updateHorizontalOffset(const bool update);
+
 Q_SIGNALS:
     void stateChanged();
+    void groupingStateChanged(GroupingState);
     void renameFileProcessStarted();
     void selectAndEditFile(const QUrl &url);
     void traverPrehandle(const QUrl &url, const QModelIndex &index, FileView *view);
@@ -123,10 +132,12 @@ Q_SIGNALS:
     void requestClearThumbnail();
 
     void requestSortChildren(Qt::SortOrder order, DFMGLOBAL_NAMESPACE::ItemRoles role, const bool isMixAndFile);
+    void requestGroupingChildren(Qt::SortOrder order, const QString &strategyName, const QVariantHash &expansionStates);
     void requestSetFilterData(const QVariant &data);
     void requestSetFilterCallback(FileViewFilterCallback callback);
     void requestShowHiddenChanged(bool value);
 
+    void requestToggleGroupExpansion(const QString &key, const QString &groupKey);
     void requestCollapseItem(const QString &key, const QUrl &parent);
     void requestTreeView(const bool isTree);
 
@@ -139,6 +150,11 @@ public Q_SLOTS:
     void onInsertFinish();
     void onRemove(int firstIndex, int count);
     void onRemoveFinish();
+    void onGroupInsert(int firstIndex, int count);
+    void onGroupInsertFinish();
+    void onGroupRemove(int firstIndex, int count);
+    void onGroupRemoveFinish();
+    void onGroupExpansionChanged(const QString &strategyName, const QString &key, bool state);
     void onUpdateView();
     void onGenericAttributeChanged(DFMBASE_NAMESPACE::Application::GenericAttribute ga, const QVariant &value);
     void onDConfigChanged(const QString &config, const QString &key);
@@ -146,6 +162,7 @@ public Q_SLOTS:
     void onHiddenSettingChanged(bool value);
     void onWorkFinish(int visiableCount, int totalCount);
     void onDataChanged(int first, int last);
+    void onGroupingDataChanged();
 
 private:
     void connectRootAndFilterSortWork(RootInfo *root, const bool refresh = false);
@@ -155,6 +172,7 @@ private:
     void discardFilterSortObjects();
 
     void changeState(ModelState newState);
+    void changeGroupingState(GroupingState newState);
     void closeCursorTimer();
     void startCursorTimer();
 
@@ -162,6 +180,7 @@ private:
     QUrl fetchingUrl;
 
     ModelState state { ModelState::kIdle };
+    GroupingState groupingStateValue { GroupingState::kIdle };
     bool readOnly { false };
     bool canFetchFiles { false };
     FileItemData *itemRootData { nullptr };
@@ -177,6 +196,7 @@ private:
     QDir::Filters currentFilters { QDir::NoFilter };
     QStringList nameFilters {};
     bool isTree { false };
+    bool updating { false };
 
     DFMGLOBAL_NAMESPACE::DirectoryLoadStrategy dirLoadStrategy { DFMGLOBAL_NAMESPACE::DirectoryLoadStrategy::kCreateNew };
     QUrl preparedUrl;

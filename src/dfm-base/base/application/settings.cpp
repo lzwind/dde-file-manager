@@ -557,6 +557,7 @@ QUrl Settings::toUrlValue(const QVariant &url)
 
     return QUrl::fromUserInput(urlString);
 }
+
 /*!
  * \brief Settings::value 获取某个组的某个key对应的value，配置的某个属性
  *
@@ -639,6 +640,7 @@ QUrl Settings::urlValue(const QString &group, const QUrl &key, const QUrl &defau
 {
     return urlValue(group, d->urlToKey(key), defaultValue);
 }
+
 /*!
  * \brief Settings::setValue 设置属性
  *

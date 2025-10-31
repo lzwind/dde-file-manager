@@ -43,6 +43,8 @@
 #include <QWindow>
 #include <QSpacerItem>
 #include <QIcon>
+#include <QCoreApplication>
+#include <QMouseEvent>
 
 DFMBASE_USE_NAMESPACE
 using namespace dfmplugin_titlebar;
@@ -108,22 +110,6 @@ void ConnectToServerDialog::onButtonClicked(const int &index)
     close();
 }
 
-void ConnectToServerDialog::onCurrentTextChanged(const QString &string)
-{
-    if (string == serverComboBox->itemText(serverComboBox->count() - 1)) {
-        QSignalBlocker blocker(serverComboBox);
-        Q_UNUSED(blocker)
-
-        serverComboBox->clear();
-        serverComboBox->addItem(tr("Clear History"));
-        serverComboBox->clearEditText();
-        serverComboBox->completer()->setModel(new QStringListModel());
-
-        SearchHistroyManager::instance()->clearHistory(supportedSchemes);
-        SearchHistroyManager::instance()->clearIPHistory();
-    }
-}
-
 void ConnectToServerDialog::doDeleteCollection(const QString &text, int row)
 {
     QString deletedItem = text;
@@ -140,32 +126,37 @@ void ConnectToServerDialog::doDeleteCollection(const QString &text, int row)
 
 void ConnectToServerDialog::onCurrentInputChanged(const QString &server)
 {
-    int found = serverComboBox->findText(server);
-    if (found >= 0 && server.startsWith("ftp")) {
-        QVariant customData = serverComboBox->itemData(found);
-        if (customData.isValid()) {
-            int charsetOpt = customData.toInt();
-            charsetComboBox->setCurrentIndex(charsetOpt);
-        }
-    }
+    int index = serverComboBox->findText(server);
+    if (index < 0)
+        return updateUiState();
 
-    if (server == serverComboBox->itemText(serverComboBox->count() - 1)) {
+    QVariant customData = serverComboBox->itemData(index);
+    // clear history
+    if (customData.isValid() && customData.toBool()) {
         QSignalBlocker blocker(serverComboBox);
         Q_UNUSED(blocker)
         serverComboBox->clear();
-        serverComboBox->addItem(tr("Clear History"));
+        // After clearing history, show a disabled "No history" placeholder
+        serverComboBox->addItem(tr("No history"));
+        serverComboBox->model()->setData(serverComboBox->model()->index(serverComboBox->count() - 1, 0), 0, Qt::UserRole - 1);
+        serverComboBox->setCurrentIndex(-1);
         serverComboBox->clearEditText();
         serverComboBox->completer()->setModel(new QStringListModel());
         SearchHistroyManager::instance()->clearHistory(supportedSchemes);
         SearchHistroyManager::instance()->clearIPHistory();
         Application::appObtuselySetting()->sync();
-    }
+    } else {
+        if (server.startsWith("ftp") && customData.isValid()) {
+            int charsetOpt = customData.toInt();
+            charsetComboBox->setCurrentIndex(charsetOpt);
+        }
 
-    if (server.contains("://")) {
-        QString scheme = server.section("://", 0, 0);
-        if (!scheme.isEmpty()) {
-            serverComboBox->setEditText(server.section("//", -1));
-            schemeComboBox->setCurrentText(scheme + "://");
+        if (server.contains("://")) {
+            QString scheme = server.section("://", 0, 0);
+            if (!scheme.isEmpty()) {
+                serverComboBox->setEditText(server.section("//", -1));
+                schemeComboBox->setCurrentText(scheme + "://");
+            }
         }
     }
 
@@ -289,9 +280,17 @@ void ConnectToServerDialog::initServerDatas()
     }
 
     completer->setModel(new QStringListModel(hosts, completer));
-
-    if (!hosts.isEmpty())
+    if (!hosts.isEmpty()) {
+        // Add a clear-history action as the last item (customData true)
+        serverComboBox->addItem(tr("Clear History"), true);
         onCurrentInputChanged(hosts.last());
+    } else {
+        // No history: show a disabled placeholder so dropdown shows a hint
+        serverComboBox->addItem(tr("No history"));
+        serverComboBox->model()->setData(serverComboBox->model()->index(serverComboBox->count() - 1, 0), 0, Qt::UserRole - 1);
+        serverComboBox->setCurrentIndex(-1);
+        serverComboBox->clearEditText();
+    }
 }
 
 QStringList ConnectToServerDialog::updateCollections(const QString &newUrlStr, bool insertWhenNoExist)
@@ -390,7 +389,6 @@ void ConnectToServerDialog::initializeUi()
         completer->setMaxVisibleItems(kMaxHistoryItems);
 
         serverComboBox = new DComboBox(this);
-        serverComboBox->addItem(tr("Clear History"));
         serverComboBox->setEditable(true);
         serverComboBox->setMaxVisibleItems(kMaxHistoryItems);
         serverComboBox->clearEditText();
@@ -569,6 +567,23 @@ void ConnectToServerDialog::updateUiState()
     int row = model->findItem(currUrlStr);
     collectionServerView->setCurrentIndex(model->index(row));
     getButton(kConnectButton)->setEnabled(!serverComboBox->currentText().isEmpty());
+
+    // 更新鼠标hover状态 - 当鼠标移动到收藏列表视图上时,需要更新hover效果
+    // 通过发送一个MouseMove事件来触发hover状态的更新
+    if (hasCollections && collectionServerView->isVisible()) {
+        QPoint globalPos = QCursor::pos();
+        QPoint viewPos = collectionServerView->viewport()->mapFromGlobal(globalPos);
+
+        if (collectionServerView->viewport()->rect().contains(viewPos)) {
+            QMouseEvent *mouseEvent = new QMouseEvent(QEvent::MouseMove,
+                                                      viewPos,
+                                                      globalPos,
+                                                      Qt::NoButton,
+                                                      Qt::NoButton,
+                                                      Qt::NoModifier);
+            QCoreApplication::postEvent(collectionServerView->viewport(), mouseEvent);
+        }
+    }
 }
 
 QString ConnectToServerDialog::schemeWithSlash(const QString &scheme) const

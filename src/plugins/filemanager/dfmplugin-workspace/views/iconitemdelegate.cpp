@@ -5,6 +5,8 @@
 #include "private/delegatecommon.h"
 #include "iconitemdelegate.h"
 #include "private/iconitemdelegate_p.h"
+
+#include <QMouseEvent>
 #include "utils/itemdelegatehelper.h"
 #include "utils/fileviewhelper.h"
 #include "fileview.h"
@@ -100,6 +102,12 @@ void IconItemDelegate::paint(QPainter *painter,
                              const QStyleOptionViewItem &option,
                              const QModelIndex &index) const
 {
+    // Check if this is a group header item
+    if (isGroupHeaderItem(index)) {
+        paintGroupHeader(painter, option, index);
+        return;
+    }
+
     Q_D(const IconItemDelegate);
 
     if (index == d->expandedIndex && !parent()->isSelected(index))
@@ -229,7 +237,7 @@ QList<QRect> IconItemDelegate::paintGeomertys(const QStyleOptionViewItem &option
 
     bool elide = (!isSelected || !singleSelected);
 
-    QList<QRectF> lines = calFileNameRect(fileName, labelRect, elide ? opt.textElideMode : Qt::ElideNone);
+    QList<QRectF> lines = calcFileNameRect(index, labelRect, elide ? opt.textElideMode : Qt::ElideNone);
 
     for (const QRectF &line : lines) {
         geometries << line.toRect();
@@ -260,6 +268,18 @@ void IconItemDelegate::updateItemSizeHint()
     int height = parent()->parent()->iconSize().height()
             + kIconModeTextPadding   // 文字与icon之间的空隙
             + 2 * kIconModeIconSpacing;   // icon与背景的上下两个间距
+
+    // In grouped icon mode with spacing=0, add virtual margins to regular file items
+    // This allows group-headers to have 0 spacing while files maintain 10px spacing between each other
+    if ((parent()->parent()->isGroupedView()
+         && parent()->parent()->spacing() == 0)
+        || parent()->parent()->groupingState() == GroupingState::kGrouping) {
+        // Add 10px virtual margins on all sides (total 20px for width and height)
+        // This creates the effect of 10px spacing between items when spacing=0
+        width += (kIconViewSpacing * 2);   // 10px left + 10px right
+        height += (kIconViewSpacing * 2);   // 10px top + 10px bottom
+        fmDebug() << "IconItemDelegate: virtual margins added for grouped view - size:" << QSize(width, height);
+    }
 
     d->itemSizeHint = QSize(width, height);
 }
@@ -393,7 +413,7 @@ QList<QRect> IconItemDelegate::itemGeomertys(const QStyleOptionViewItem &opt, co
     labelRect.setLeft(labelRect.left() + kIconModeRectRadius);
     labelRect.setWidth(labelRect.width() - kIconModeRectRadius);
 
-    QList<QRectF> lines = calFileNameRect(fileName, labelRect, opt.textElideMode);
+    QList<QRectF> lines = calcFileNameRect(index, labelRect, opt.textElideMode);
     for (const auto &line : lines) {
         geometries.append(line.toRect());
     }
@@ -446,11 +466,23 @@ QString IconItemDelegate::displayFileName(const QModelIndex &index) const
     return str;
 }
 
-QList<QRectF> IconItemDelegate::calFileNameRect(const QString &name, const QRectF &rect, Qt::TextElideMode elideMode) const
+QList<QRectF> IconItemDelegate::calcFileNameRect(const QModelIndex &index, const QRectF &rect, Qt::TextElideMode elideMode) const
 {
+    if (!index.isValid()) {
+        return QList<QRectF>();
+    }
+
+    const QString &name = displayFileName(index);
     int lineHeight = UniversalUtils::getTextLineHeight(name, parent()->parent()->fontMetrics());
     QScopedPointer<ElideTextLayout> layout(ItemDelegateHelper::createTextLayout(name, QTextOption::WrapAtWordBoundaryOrAnywhere,
                                                                                 lineHeight, Qt::AlignCenter));
+
+    // Add tag support by calling hook, same as Canvas implementation
+    const FileInfoPointer &info = parent()->fileInfo(index);
+    if (info) {
+        WorkspaceEventSequence::instance()->doIconItemLayoutText(info, layout.data());
+    }
+
     return layout->layout(rect, elideMode);
 }
 
@@ -498,18 +530,25 @@ QPainterPath IconItemDelegate::paintItemBackgroundAndGeomerty(QPainter *painter,
     Q_UNUSED(backgroundMargin);
     painter->save();
 
-    bool isPaintForAnim = option.state & QStyle::State_AutoRaise;
+    // Remove virtual margins in grouped mode to get actual drawing rect
+    QStyleOptionViewItem adjustedOption = option;
+    if (parent()->parent()->isGroupedView() && parent()->parent()->spacing() == 0) {
+        adjustedOption.rect = option.rect.marginsRemoved(QMargins(kIconViewSpacing, kIconViewSpacing,
+                                                                  kIconViewSpacing, kIconViewSpacing));
+    }
+
+    bool isPaintForAnim = adjustedOption.state & QStyle::State_AutoRaise;
     bool isDragMode = (static_cast<QPaintDevice *>(parent()->parent()->viewport()) != painter->device()) && !isPaintForAnim;
-    bool isSelected = !isDragMode && (option.state & QStyle::State_Selected) && option.showDecorationSelected;
+    bool isSelected = !isDragMode && (adjustedOption.state & QStyle::State_Selected) && adjustedOption.showDecorationSelected;
     bool isDropTarget = parent()->isDropTarget(index);
 
-    DPalette pl(DPaletteHelper::instance()->palette(option.widget));
+    DPalette pl(DPaletteHelper::instance()->palette(adjustedOption.widget));
     QColor backgroundColor = pl.color(DPalette::ColorGroup::Active, DPalette::ColorType::ItemBackground);
 
     QColor baseColor = backgroundColor;
     bool isUpshow = false;
-    if (option.widget) {
-        baseColor = option.widget->palette().base().color();
+    if (adjustedOption.widget) {
+        baseColor = adjustedOption.widget->palette().base().color();
         DGuiApplicationHelper::ColorType ct = DGuiApplicationHelper::toColorType(baseColor);
         if (ct == DGuiApplicationHelper::DarkType) {
             baseColor = DGuiApplicationHelper::adjustColor(baseColor, 0, 0, +5, 0, 0, 0, 0);
@@ -517,10 +556,10 @@ QPainterPath IconItemDelegate::paintItemBackgroundAndGeomerty(QPainter *painter,
         }
     }
 
-    bool isHover = option.state & QStyle::StateFlag::State_MouseOver;
+    bool isHover = adjustedOption.state & QStyle::StateFlag::State_MouseOver;
     if (isDropTarget && !isSelected) {
         backgroundColor.setAlpha(40);   // DropTarg背景设置透明度为15% (40/255);
-    } else if (option.state & QStyle::StateFlag::State_Selected) {
+    } else if (adjustedOption.state & QStyle::StateFlag::State_Selected) {
         backgroundColor.setAlpha(backgroundColor.alpha() + 40);
     } else if (isHover) {
         DGuiApplicationHelper::ColorType ct = DGuiApplicationHelper::toColorType(baseColor);
@@ -535,12 +574,12 @@ QPainterPath IconItemDelegate::paintItemBackgroundAndGeomerty(QPainter *painter,
         backgroundColor = baseColor;
     }
 
-    QRectF backgroundRect = option.rect;
+    QRectF backgroundRect = adjustedOption.rect;
     QSizeF iconSize = parent()->parent()->iconSize();
     // 左右上下和icon的边距都是6
     backgroundRect.setSize(iconSize + QSizeF(2 * kIconModeIconSpacing, 2 * kIconModeIconSpacing));
     // for checkmark
-    qreal backgroundx = (option.rect.width() - backgroundRect.width()) / 2.0;
+    qreal backgroundx = (adjustedOption.rect.width() - backgroundRect.width()) / 2.0;
     backgroundRect.moveLeft(backgroundRect.left() + backgroundx);   // x坐标居中
     // draw background
     QPainterPath path;
@@ -567,8 +606,15 @@ QPainterPath IconItemDelegate::paintItemBackgroundAndGeomerty(QPainter *painter,
 
 QRectF IconItemDelegate::paintItemIcon(QPainter *painter, const QStyleOptionViewItem &opt, const QModelIndex &index) const
 {
+    // Remove virtual margins in grouped mode to get actual drawing rect
+    QRectF drawingRect = opt.rect;
+    if (parent()->parent()->isGroupedView() && parent()->parent()->spacing() == 0) {
+        drawingRect = opt.rect.marginsRemoved(QMargins(kIconViewSpacing, kIconViewSpacing,
+                                                       kIconViewSpacing, kIconViewSpacing));
+    }
+
     // init icon geomerty
-    QRectF iconRect = itemIconRect(opt.rect);
+    QRectF iconRect = itemIconRect(drawingRect);
 
     bool isDropTarget = parent()->isDropTarget(index);
     if (isDropTarget) {
@@ -617,8 +663,15 @@ void IconItemDelegate::paintItemFileName(QPainter *painter, QRectF iconRect, QPa
         return;
     }
 
+    // Remove virtual margins in grouped mode to get actual drawing rect
+    QRectF drawingRect = opt.rect;
+    if (parent()->parent()->isGroupedView() && parent()->parent()->spacing() == 0) {
+        drawingRect = opt.rect.marginsRemoved(QMargins(kIconViewSpacing, kIconViewSpacing,
+                                                       kIconViewSpacing, kIconViewSpacing));
+    }
+
     // init file name geometry
-    QRectF labelRect = opt.rect;
+    QRectF labelRect = drawingRect;
     labelRect.setTop(static_cast<int>(iconRect.bottom()) + kIconModeTextPadding + kIconModeIconSpacing);
 
     bool singleSelected = parent()->parent()->selectedIndexCount() < 2;
@@ -703,8 +756,12 @@ QSize IconItemDelegate::iconSizeByIconSizeLevel() const
     return QSize(size, size);
 }
 
-QSize IconItemDelegate::sizeHint(const QStyleOptionViewItem &, const QModelIndex &index) const
+QSize IconItemDelegate::sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const
 {
+    // Check if this is a group header item
+    if (isGroupHeaderItem(index)) {
+        return getGroupHeaderSizeHint(option, index);
+    }
 
     Q_D(const IconItemDelegate);
 
@@ -780,8 +837,15 @@ void IconItemDelegate::updateEditorGeometry(QWidget *editor, const QStyleOptionV
 
     const QSize &iconSize = fileview->iconSize();
 
-    editor->move(option.rect.topLeft());
-    editor->setMinimumHeight(option.rect.height());
+    // Remove virtual margins in grouped mode to get correct editor position
+    QRect editorRect = option.rect;
+    if (fileview->isGroupedView() && fileview->spacing() == 0) {
+        editorRect = option.rect.marginsRemoved(QMargins(kIconViewSpacing, kIconViewSpacing,
+                                                         kIconViewSpacing, kIconViewSpacing));
+    }
+
+    editor->move(editorRect.topLeft());
+    editor->setMinimumHeight(editorRect.height());
 
     QStyleOptionViewItem opt = option;
     initStyleOption(&opt, index);
@@ -790,13 +854,13 @@ void IconItemDelegate::updateEditorGeometry(QWidget *editor, const QStyleOptionV
         // 重置textBounding，使其在adjustSize重新计算，否则在调整图标大小时使用旧的textBounding计算导致显示不全
         d->expandedItem->show();
         d->expandedItem->setTextBounding(QRect());
-        editor->setFixedWidth(option.rect.width());
+        editor->setFixedWidth(editorRect.width());
         d->expandedItem->setIconHeight(iconSize.height());
         editor->adjustSize();
         return;
     }
 
-    editor->setFixedWidth(option.rect.width());
+    editor->setFixedWidth(editorRect.width());
 
     IconItemEditor *item = qobject_cast<IconItemEditor *>(editor);
 
@@ -892,4 +956,60 @@ bool IconItemDelegate::eventFilter(QObject *object, QEvent *event)
     }
 
     return QStyledItemDelegate::eventFilter(object, event);
+}
+
+// Group functionality implementation
+int IconItemDelegate::getGroupHeaderHeight(const QStyleOptionViewItem &option) const
+{
+    Q_UNUSED(option)
+
+    // Fixed height of 32 pixels for icon mode group headers
+    return 32;
+}
+
+QRectF IconItemDelegate::getGroupHeaderBackgroundRect(const QStyleOptionViewItem &option) const
+{
+    // In icon mode, the group header should span the full viewport width with 10px margins on both sides
+    // We need to get the viewport widget to calculate the correct rect
+    FileView *view = parent() ? parent()->parent() : nullptr;
+    if (!view) {
+        // Fallback: use option.rect if we can't get the view
+        return option.rect;
+    }
+
+    QRectF rect = option.rect;
+
+    // Reset left to viewport left edge
+    rect.setLeft(10);
+
+    // Set right to viewport right edge
+    int viewportWidth = view->viewport()->width();
+    rect.setRight(viewportWidth - 10);
+
+    return rect;
+}
+
+bool IconItemDelegate::editorEvent(QEvent *event, QAbstractItemModel *model, const QStyleOptionViewItem &option, const QModelIndex &index)
+{
+    // // Handle group header clicks
+    // if (isGroupHeaderItem(index) && event->type() == QEvent::MouseButtonPress) {
+    //     QMouseEvent *mouseEvent = static_cast<QMouseEvent *>(event);
+    //     handleGroupHeaderClick(mouseEvent, option, index);
+    //     return true;
+    // }
+
+    // // Handle double-click on group headers for expand/collapse
+    // if (isGroupHeaderItem(index) && event->type() == QEvent::MouseButtonDblClick) {
+    //     QMouseEvent *mouseEvent = static_cast<QMouseEvent *>(event);
+    //     if (mouseEvent->button() == Qt::LeftButton) {
+    //         const QString groupKey = index.data(Global::kItemGroupHeaderKey).toString();
+    //         if (!groupKey.isEmpty()) {
+    //             emit const_cast<IconItemDelegate *>(this)->groupExpansionToggled(groupKey);
+    //         }
+    //         return true;
+    //     }
+    // }
+
+    // Call base class implementation for regular items
+    return BaseItemDelegate::editorEvent(event, model, option, index);
 }

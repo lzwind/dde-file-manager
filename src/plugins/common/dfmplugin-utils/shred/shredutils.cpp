@@ -5,6 +5,7 @@
 #include "shredutils.h"
 #include "progressdialog.h"
 #include "fileshredworker.h"
+#include "shredfilemodel.h"
 
 #include <dfm-base/base/configs/dconfig/dconfigmanager.h>
 #include <dfm-base/utils/fileutils.h>
@@ -17,11 +18,9 @@
 #include <DTipLabel>
 #include <DDialog>
 #include <DFrame>
+#include <DListView>
 
-#include <QListWidget>
 #include <QStandardPaths>
-#include <QFileInfo>
-#include <QStorageInfo>
 #include <QRegularExpression>
 #include <QApplication>
 #include <QVBoxLayout>
@@ -72,18 +71,17 @@ void ShredUtils::initDconfig()
 
 bool ShredUtils::isValidFile(const QUrl &file)
 {
-    // 获取真实路径(解析软链接)
-    QString realPath = QFileInfo(file.toLocalFile()).canonicalFilePath();
-    if (realPath.isEmpty())
-        realPath = file.toLocalFile();
+    auto info = InfoFactory::create<FileInfo>(file);
+    if (!info) return false;
 
-    if (DevProxyMng->isFileOfExternalBlockMounts(realPath))
+    QString filePath = info->pathOf(FileInfo::FilePathInfoType::kAbsoluteFilePath);
+    if (DevProxyMng->isFileOfExternalBlockMounts(filePath))
         return true;
 
     // 如果是数据盘路径，移除前缀后再判断
     QString homePath = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
-    realPath = FileUtils::bindPathTransform(realPath, false);
-    if (!realPath.startsWith(homePath) || realPath == homePath)
+    filePath = FileUtils::bindPathTransform(filePath, false);
+    if (!filePath.startsWith(homePath) || filePath == homePath)
         return false;
 
     // 检查是否为特殊目录
@@ -99,8 +97,8 @@ bool ShredUtils::isValidFile(const QUrl &file)
     };
 
     // 检查路径是否为受保护目录（只检查目录本身，不包括子目录）
-    if (protectedDirs.contains(realPath)) {
-        fmWarning() << "Cannot shred protected directory: " << realPath;
+    if (protectedDirs.contains(filePath)) {
+        fmWarning() << "Cannot shred protected directory: " << filePath;
         return false;
     }
 
@@ -127,8 +125,7 @@ void ShredUtils::shredfile(const QList<QUrl> &fileList, quint64 winId)
     });
 
     // Create progress dialog
-    auto window = FMWindowsIns.findWindowById(winId);
-    ProgressDialog *progressDialog = new ProgressDialog(window);
+    ProgressDialog *progressDialog = new ProgressDialog();
     progressDialog->setAttribute(Qt::WA_DeleteOnClose);
 
     // Setup signal connections
@@ -141,7 +138,7 @@ void ShredUtils::shredfile(const QList<QUrl> &fileList, quint64 winId)
             });
         } else {
             progressDialog->handleShredResult(false, message);
-            progressDialog->exec();
+            progressDialog->raise();
         }
     });
 
@@ -153,58 +150,27 @@ void ShredUtils::shredfile(const QList<QUrl> &fileList, quint64 winId)
     QMetaObject::invokeMethod(worker, "shredFile", Qt::QueuedConnection, Q_ARG(QList<QUrl>, fileList));
 }
 
-void ShredUtils::updateVaultMenuConfig()
-{
-    const QString kVaultDConfigName = "org.deepin.dde.file-manager.vault";
-
-    // 获取现有的菜单配置
-    const QVariant vRe = DConfigManager::instance()->value(kVaultDConfigName, "normalMenuActions");
-    QStringList currentConfig = vRe.toStringList();
-    fmDebug() << "Current vault menu config: " << currentConfig;
-
-    if (!currentConfig.contains("shredfile")) {
-        // 找到 "reverse-select" 的位置
-        int reverseSelectIndex = currentConfig.indexOf("reverse-select");
-
-        if (reverseSelectIndex != -1) {
-            // 在 "reverse-select" 后面插入 "shredfile"
-            currentConfig.insert(reverseSelectIndex + 1, "separator-line");
-            currentConfig.insert(reverseSelectIndex + 2, "shredfile");
-        } else {
-            // 果找不到 "reverse-select"，就追加到末尾
-            currentConfig.append("shredfile");
-        }
-
-        fmDebug() << "New config to be set: " << currentConfig;
-
-        // 使用 DConfigManager 写入新配置
-        DConfigManager::instance()->setValue(kVaultDConfigName, "normalMenuActions", currentConfig);
-    }
-}
-
-QPair<QWidget *, QWidget *> ShredUtils::createShredSettingItem(QObject *opt)
+QWidget *ShredUtils::createShredSettingItem(QObject *opt)
 {
     auto option = qobject_cast<Dtk::Core::DSettingsOption *>(opt);
 
     auto widget = new QWidget;
-    widget->setContentsMargins(0, 0, 0, 0);
     QVBoxLayout *layout = new QVBoxLayout(widget);
     layout->setContentsMargins(0, 0, 0, 0);
 
-    auto lab = new QLabel(option->data("text").toString());
-    layout->addWidget(lab);
-
     QHBoxLayout *hLayout = new QHBoxLayout();
     hLayout->setContentsMargins(0, 0, 0, 0);
+    auto lab = new QLabel(tr("Enable File Shred"), widget);
+    auto btn = new DSwitchButton(widget);
+    hLayout->addWidget(lab);
+    hLayout->addWidget(btn, 0, Qt::AlignRight);
     layout->addLayout(hLayout);
 
-    auto msgLabel = new DTipLabel(option->data("message").toString(), widget);
+    auto msgLabel = new DTipLabel(tr("Once enable, the 'File Shred' option becomes available in the context menu for secure file deletion"), widget);
     msgLabel->setAlignment(Qt::AlignLeft);
     msgLabel->setWordWrap(true);
+    layout->addWidget(msgLabel);
 
-    hLayout->addWidget(msgLabel);
-
-    auto btn = new DSwitchButton;
     // 设置初始状态
     bool status = ShredUtils::instance()->isShredEnabled();
     btn->setChecked(status);
@@ -225,7 +191,7 @@ QPair<QWidget *, QWidget *> ShredUtils::createShredSettingItem(QObject *opt)
         btn->setChecked(checked);
     });
 
-    return qMakePair(widget, btn);
+    return widget;
 }
 
 bool ShredUtils::confirmAndDisplayFiles(const QList<QUrl> &fileList)
@@ -241,19 +207,27 @@ bool ShredUtils::confirmAndDisplayFiles(const QList<QUrl> &fileList)
     DFrame *frame = new DFrame(&dialog);
     QVBoxLayout *layout = new QVBoxLayout(frame);
     layout->setContentsMargins(4, 4, 4, 4);
-    QListWidget *listWidget = new QListWidget(frame);
-    listWidget->setFrameShape(QFrame::NoFrame);
-    layout->addWidget(listWidget);
 
-    for (const auto &url : fileList) {
-        auto info = InfoFactory::create<FileInfo>(url, Global::CreateFileInfoType::kCreateFileInfoAuto);
-        if (!info->exists())
-            continue;
+    DListView *view = new DListView(frame);
+    view->setFixedHeight(200);
+    view->setEditTriggers(QListView::NoEditTriggers);
+    view->setTextElideMode(Qt::ElideMiddle);
+    view->setIconSize(QSize(24, 24));
+    view->setResizeMode(QListView::Adjust);
+    view->setMovement(QListView::Static);
+    view->setSelectionMode(QListView::NoSelection);
+    view->setFrameShape(QFrame::NoFrame);
+    view->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    view->setBackgroundType(DStyledItemDelegate::BackgroundType::RoundedBackground);
+    view->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Expanding);
+    view->setViewportMargins(0, 0, 0, 0);
+    view->setItemSpacing(1);
+    view->setUniformItemSizes(true);
 
-        QListWidgetItem *item = new QListWidgetItem(info->fileIcon(), info->displayOf(DisPlayInfoType::kFileDisplayName));
-        item->setSizeHint(QSize(item->sizeHint().width(), 35));   // 设置item高度
-        listWidget->addItem(item);
-    }
+    ShredFileModel *model = new ShredFileModel(view);
+    model->setFileList(fileList);
+    view->setModel(model);
+    layout->addWidget(view);
 
     dialog.addContent(frame);
     dialog.addButton(tr("Cancel"));

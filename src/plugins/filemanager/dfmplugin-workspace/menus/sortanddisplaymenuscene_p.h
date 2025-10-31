@@ -25,9 +25,11 @@ public:
 private:
     void createEmptyMenu(QMenu *parent);
     QMenu *addSortByActions(QMenu *menu);
+    QMenu *addGroupByActions(QMenu *menu);
     QMenu *addDisplayAsActions(QMenu *menu);
 
     void sortByRole(int role);
+    void groupByStrategy(const QString &strategyName);
     void updateEmptyAreaActionState();
 
 private:

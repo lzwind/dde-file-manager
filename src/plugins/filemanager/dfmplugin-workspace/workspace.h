@@ -67,8 +67,11 @@ class Workspace : public dpf::Plugin
     DPF_EVENT_REG_SLOT(slot_Model_GetNameFilter)
     DPF_EVENT_REG_SLOT(slot_Model_FileUpdate)
     DPF_EVENT_REG_SLOT(slot_Model_CurrentSortRole)
+    DPF_EVENT_REG_SLOT(slot_Model_ColumnDisplayName)
     DPF_EVENT_REG_SLOT(slot_Model_ColumnRoles)
     DPF_EVENT_REG_SLOT(slot_Model_SetSort)
+    DPF_EVENT_REG_SLOT(slot_Model_CurrentGroupStrategy)
+    DPF_EVENT_REG_SLOT(slot_Model_SetGroup)
     DPF_EVENT_REG_SLOT(slot_Model_RegisterDataCache)
     DPF_EVENT_REG_SLOT(slot_Model_RegisterLoadStrategy)
 
@@ -84,6 +87,7 @@ class Workspace : public dpf::Plugin
     DPF_EVENT_REG_HOOK(hook_DragDrop_FileCanMove)
 
     DPF_EVENT_REG_HOOK(hook_ShortCut_CopyFiles)
+    DPF_EVENT_REG_HOOK(hook_ShortCut_CopyFilePath)
     DPF_EVENT_REG_HOOK(hook_ShortCut_CutFiles)
     DPF_EVENT_REG_HOOK(hook_ShortCut_PasteFiles)
     DPF_EVENT_REG_HOOK(hook_ShortCut_DeleteFiles)

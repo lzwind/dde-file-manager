@@ -13,6 +13,8 @@
 #include <dfm-base/base/configs/dconfig/dconfigmanager.h>
 
 #include <DFontSizeManager>
+#include <DPalette>
+#include <DPaletteHelper>
 
 #include <QVBoxLayout>
 #include <QStandardItemModel>
@@ -31,7 +33,7 @@ using namespace GlobalDConfDefines::BaseConfig;
 
 static constexpr int kViewOptionsButtonIconSize { 16 };
 static constexpr int kViewOptionsMargin { 10 };
-static constexpr int kViewOptionsSpacing { 10 };
+static constexpr int kViewOptionsWidth { 180 };
 static constexpr int kViewOptionsSingleSpacing { 5 };
 static constexpr int kViewOptionsFrameMargin { 6 };
 static constexpr int kViewOptionsFrameHeight { 40 };
@@ -53,9 +55,11 @@ void ViewOptionsWidgetPrivate::initializeUi()
     // Title
     QVBoxLayout *mainLayout = new QVBoxLayout(q);
     mainLayout->setContentsMargins(kViewOptionsMargin, kViewOptionsMargin, kViewOptionsMargin, kViewOptionsMargin);
+    mainLayout->setSizeConstraint(QLayout::SetFixedSize);
     title = new DLabel(tr("View Options"), q);
     DFontSizeManager::instance()->bind(title, DFontSizeManager::T6, QFont::Normal);
     title->setAlignment(Qt::AlignCenter);
+    title->setFixedWidth(kViewOptionsWidth);
     mainLayout->addWidget(title);
 
     // Icon size
@@ -68,6 +72,7 @@ void ViewOptionsWidgetPrivate::initializeUi()
     QFrame *iconSizeLabelFrame = new QFrame(q);
     iconSizeLabelFrame->setFixedWidth(10);
     iconSizeTitle = new DLabel(tr("Icon size"), q);
+    DFontSizeManager::instance()->bind(iconSizeTitle, DFontSizeManager::T10, QFont::Normal);
     iconSizeLabelLayout->addWidget(iconSizeLabelFrame);
     iconSizeLabelLayout->addWidget(iconSizeTitle);
     iconSizeLayout->addLayout(iconSizeLabelLayout);
@@ -101,6 +106,7 @@ void ViewOptionsWidgetPrivate::initializeUi()
     QFrame *gridDensityLabelFrame = new QFrame(q);
     gridDensityLabelFrame->setFixedWidth(10);
     gridDensityTitle = new DLabel(tr("Grid density"), q);
+    DFontSizeManager::instance()->bind(gridDensityTitle, DFontSizeManager::T10, QFont::Normal);
     gridDensityLabelLayout->addWidget(gridDensityLabelFrame);
     gridDensityLabelLayout->addWidget(gridDensityTitle);
     gridDensityLayout->addLayout(gridDensityLabelLayout);
@@ -134,6 +140,7 @@ void ViewOptionsWidgetPrivate::initializeUi()
     QFrame *listHeightLabelFrame = new QFrame(q);
     listHeightLabelFrame->setFixedWidth(10);
     listHeightTitle = new DLabel(tr("List height"), q);
+    DFontSizeManager::instance()->bind(listHeightTitle, DFontSizeManager::T10, QFont::Normal);
     listHeightLabelLayout->addWidget(listHeightLabelFrame);
     listHeightLabelLayout->addWidget(listHeightTitle);
     listHeightLayout->addLayout(listHeightLabelLayout);
@@ -168,6 +175,21 @@ void ViewOptionsWidgetPrivate::initializeUi()
     displayPreviewLayout->addWidget(displayPreviewCheckBox);
     displayPreviewWidget->setLayout(displayPreviewLayout);
     mainLayout->addWidget(displayPreviewWidget);
+    auto updateLabelColor = [this]() {
+        bool isDarkTheme = DGuiApplicationHelper::instance()->themeType() == DGuiApplicationHelper::DarkType;
+
+        DPalette pa = DPaletteHelper::instance()->palette(title);
+        QColor textColor = isDarkTheme ? QColor(255, 255, 255, 128)
+                                       : QColor(0, 0, 0, 128);
+
+        pa.setColor(DPalette::WindowText, textColor);
+        iconSizeTitle->setPalette(pa);
+        gridDensityTitle->setPalette(pa);
+        listHeightTitle->setPalette(pa);
+    };
+    updateLabelColor();
+    connect(DGuiApplicationHelper::instance(), &DGuiApplicationHelper::themeTypeChanged,
+            title, updateLabelColor);
 }
 
 void ViewOptionsWidgetPrivate::initConnect()
@@ -240,7 +262,7 @@ void ViewOptionsWidgetPrivate::setUrl(const QUrl &url)
 {
     fmDebug() << "Setting URL for view options:" << url.toString();
     fileUrl = url;
-    
+
     QVariant defaultIconSize = Application::instance()->appAttribute(Application::kIconSizeLevel).toInt();
     QVariant iconSizeValue = TitleBarHelper::getFileViewStateValue(fileUrl, "iconSizeLevel", defaultIconSize);
     iconSizeSlider->blockSignals(true);
@@ -277,16 +299,6 @@ void ViewOptionsWidgetPrivate::switchMode(ViewMode mode)
     iconSizeFrame->setVisible(iconVisible);
     gridDensityFrame->setVisible(iconVisible);
     listHeightFrame->setVisible(listVisible);
-    int widgetHeight = kViewOptionsMargin + kViewOptionsFrameHeight + kViewOptionsSpacing + title->fontMetrics().height();
-    int singleHeight = kViewOptionsFrameHeight + iconSizeTitle->fontMetrics().height() + kViewOptionsSingleSpacing + kViewOptionsSpacing;
-    if (iconVisible) {
-        widgetHeight += 2 * singleHeight;
-    }
-    if (listVisible) {
-        widgetHeight += singleHeight;
-    }
-    q->setFixedHeight(widgetHeight);
-    fmDebug() << "View options widget height set to:" << widgetHeight;
 }
 
 void ViewOptionsWidgetPrivate::showSliderTips(Dtk::Widget::DSlider *slider, int pos, const QVariantList &valList)

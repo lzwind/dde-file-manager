@@ -296,7 +296,15 @@ void WorkspaceHelper::setSort(quint64 windowId, Global::ItemRoles role)
     FileView *view = findFileViewByWindowID(windowId);
     if (view) {
         Qt::SortOrder order = view->model()->sortOrder();
-        view->setSort(role, order == Qt::AscendingOrder ? Qt::DescendingOrder : Qt::AscendingOrder);
+        auto oldRole = view->model()->sortRole();
+        order = oldRole != role               ? Qt::AscendingOrder
+                : order == Qt::AscendingOrder ? Qt::DescendingOrder
+                                              : Qt::AscendingOrder;
+
+        fmDebug() << "Sorting by role:" << role << "order:" << (order == Qt::AscendingOrder ? "Ascending" : "Descending")
+                  << "old role:" << oldRole;
+
+        view->setSort(role, order);
     }
 }
 
@@ -307,6 +315,55 @@ Global::ItemRoles WorkspaceHelper::sortRole(quint64 windowId)
         return static_cast<Global::ItemRoles>(view->model()->sortRole());
 
     return Global::ItemRoles::kItemUnknowRole;
+}
+
+// Modern grouping interface
+void WorkspaceHelper::setGroupingStrategy(quint64 windowId, const QString &strategyName)
+{
+    FileView *view = findFileViewByWindowID(windowId);
+    if (view) {
+        fmInfo() << "WorkspaceHelper: Setting grouping strategy" << strategyName << "for window" << windowId;
+        QString oldStrategy = view->model()->groupingStrategy();
+        Qt::SortOrder order = view->model()->groupingOrder();
+        fmInfo() << "Setting grouping strategy:" << strategyName << "old strategy:" << oldStrategy;
+
+        // Always set the strategy first (including "NoGroupStrategy")
+        if (oldStrategy == strategyName) {
+            // User clicked the same strategy - toggle sort order (unless it's NoGroupStrategy)
+            if (strategyName != GroupStrategy::kNoGroup) {
+                order = (order == Qt::AscendingOrder) ? Qt::DescendingOrder : Qt::AscendingOrder;
+                fmInfo() << "Toggling grouping order for strategy:" << strategyName
+                         << "to" << (order == Qt::AscendingOrder ? "Ascending" : "Descending");
+            }
+            // For NoGroupStrategy, clicking again just reconfirms the disable state
+        } else {
+            // Different strategy - set default ascending order for new strategy
+            order = Qt::AscendingOrder;
+        }
+
+        view->setGroup(strategyName, order);
+        fmInfo() << "Grouping set with strategy:" << strategyName
+                 << "order:" << (order == Qt::AscendingOrder ? "Ascending" : "Descending");
+    }
+}
+
+QString WorkspaceHelper::getGroupingStrategy(quint64 windowId)
+{
+    FileView *view = findFileViewByWindowID(windowId);
+    if (view) {
+        return view->model()->groupingStrategy();
+    }
+
+    return {};
+}
+
+QString WorkspaceHelper::roleDisplayName(quint64 windowId, dfmbase::Global::ItemRoles role)
+{
+    FileView *view = findFileViewByWindowID(windowId);
+    if (view)
+        return view->model()->roleDisplayString(role);
+
+    return {};
 }
 
 QList<ItemRoles> WorkspaceHelper::columnRoles(quint64 windowId)

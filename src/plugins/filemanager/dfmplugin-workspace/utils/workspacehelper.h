@@ -70,7 +70,12 @@ public:
     void reverseSelect(quint64 windowId);
     void setSort(quint64 windowId, DFMBASE_NAMESPACE::Global::ItemRoles role);
     DFMBASE_NAMESPACE::Global::ItemRoles sortRole(quint64 windowId);
+
+    // Modern grouping interface
+    void setGroupingStrategy(quint64 windowId, const QString &strategyName);
+    QString getGroupingStrategy(quint64 windowId);
     QList<DFMGLOBAL_NAMESPACE::ItemRoles> columnRoles(quint64 windowId);
+    QString roleDisplayName(quint64 windowId, DFMBASE_NAMESPACE::Global::ItemRoles role);
 
     bool reigsterViewRoutePrehandler(const QString &scheme, const FileViewRoutePrehaldler prehandler);
     bool haveViewRoutePrehandler(const QString &scheme) const;

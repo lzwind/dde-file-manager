@@ -34,7 +34,9 @@
 #include <QLineEdit>
 #include <QApplication>
 #include <QToolTip>
+#include <QMouseEvent>
 #include <QPainterPath>
+#include <QScrollBar>
 
 #include <linux/limits.h>
 
@@ -57,6 +59,12 @@ void ListItemDelegate::paint(QPainter *painter,
                              const QStyleOptionViewItem &option,
                              const QModelIndex &index) const
 {
+    // Check if this is a group header item
+    if (isGroupHeaderItem(index)) {
+        paintGroupHeader(painter, option, index);
+        return;
+    }
+
     QStyleOptionViewItem opt = option;
 
     auto info = parent()->fileInfo(index);
@@ -92,6 +100,11 @@ void ListItemDelegate::paint(QPainter *painter,
 
 QSize ListItemDelegate::sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const
 {
+    // Check if this is a group header item
+    if (isGroupHeaderItem(index)) {
+        return getGroupHeaderSizeHint(option, index);
+    }
+
     Q_UNUSED(index)
     Q_D(const ListItemDelegate);
 
@@ -106,14 +119,8 @@ QWidget *ListItemDelegate::createEditor(QWidget *parent, const QStyleOptionViewI
 
     d->editingIndex = index;
     d->editor = new ListItemEditor(parent);
-
-    const FileInfoPointer &fileInfo = this->parent()->fileInfo(index);
-
-    if (fileInfo && fileInfo->urlOf(UrlInfoType::kUrl).scheme() == "search") {
-        d->editor->setFixedHeight(GlobalPrivate::kListEditorHeight * 2 - 10);
-    } else {
-        d->editor->setFixedHeight(GlobalPrivate::kListEditorHeight);
-    }
+    auto size = sizeHint(option, index);
+    d->editor->setFixedHeight(size.height());
 
     connect(static_cast<ListItemEditor *>(d->editor), &ListItemEditor::inputFocusOut, this, &ListItemDelegate::editorFinished);
 
@@ -200,11 +207,20 @@ bool ListItemDelegate::helpEvent(QHelpEvent *event, QAbstractItemView *view, con
         const QList<QRect> &geometries = paintGeomertys(option, index);
 
         QString tooltip {};
+        // 获取横向滚动偏移量，用于修正tooltip位置检测
+        int horizontalOffset = 0;
+        if (view)
+            horizontalOffset = view->horizontalScrollBar()->value();
+
         // 从1开始是为了排除掉icon区域
         for (int i = d->paintProxy->iconRectIndex() + 1; i < geometries.length() && i <= columnRoleList.length(); ++i) {
             const QRect &rect = geometries.at(i);
 
-            if (rect.left() <= event->x() && rect.right() >= event->x()) {
+            // 考虑横向滚动偏移量调整rect位置
+            QRect adjustedRect = rect;
+            adjustedRect.translate(-horizontalOffset, 0);
+
+            if (adjustedRect.left() <= event->x() && adjustedRect.right() >= event->x()) {
                 const QString &tipStr = index.data(columnRoleList[i - d->paintProxy->iconRectIndex() - 1]).toString();
 
                 if (option.fontMetrics.horizontalAdvance(tipStr) > rect.width()) {
@@ -356,26 +372,26 @@ int ListItemDelegate::maximumIconSizeLevel() const
 int ListItemDelegate::increaseIcon()
 {
     Q_D(const ListItemDelegate);
-    
+
     int newLevel = d->currentHeightLevel + 1;
     if (newLevel >= d->viewDefines.listHeightCount()) {
         fmDebug() << "Cannot increase height level: already at maximum" << (d->viewDefines.listHeightCount() - 1);
         return d->currentHeightLevel;
     }
-    
+
     return setIconSizeByIconSizeLevel(newLevel);
 }
 
 int ListItemDelegate::decreaseIcon()
 {
     Q_D(const ListItemDelegate);
-    
+
     int newLevel = d->currentHeightLevel - 1;
     if (newLevel < 0) {
         fmDebug() << "Cannot decrease height level: already at minimum 0";
         return d->currentHeightLevel;
     }
-    
+
     return setIconSizeByIconSizeLevel(newLevel);
 }
 
@@ -392,7 +408,7 @@ int ListItemDelegate::setIconSizeByIconSizeLevel(int level)
     updateItemSizeHint();
     int iconHeight = d->itemSizeHint.height() * 0.75;
     parent()->parent()->setIconSize(QSize(iconHeight, iconHeight));   // Set iconSize to 0.75 of row height
-    
+
     fmDebug() << "List height level set to:" << level;
     return d->currentHeightLevel;
 }
@@ -497,7 +513,8 @@ void ListItemDelegate::paintItemColumn(QPainter *painter, const QStyleOptionView
     double columnX = iconRect.right();
 
     bool isSelected = (opt.state & QStyle::State_Selected) && opt.showDecorationSelected;
-    if (isSelected)
+    bool isDropTarget = parent()->isDropTarget(index);
+    if (isSelected || isDropTarget)
         painter->setPen(opt.palette.color(QPalette::Active, QPalette::HighlightedText));
 
     // 绘制那些需要显示的项
@@ -538,7 +555,7 @@ void ListItemDelegate::paintItemColumn(QPainter *painter, const QStyleOptionView
             textRect.setHeight(d->textLineHeight);
             textRect.moveTop(((columnRect.height() - textRect.height()) / 2) + columnRect.top());
 
-            if (!isSelected)
+            if (!isSelected && !isDropTarget)
                 painter->setPen(opt.palette.color(cGroup, QPalette::Text));
 
             if (data.canConvert<QString>()) {
@@ -560,7 +577,9 @@ void ListItemDelegate::paintFileName(QPainter *painter, const QStyleOptionViewIt
         return;
 
     bool isSelected = (option.state & QStyle::State_Selected) && option.showDecorationSelected;
-    painter->setPen(option.palette.color(isSelected ? QPalette::BrightText : QPalette::Text));
+    bool isDropTarget = parent()->isDropTarget(index);
+    const auto itemColor = option.palette.color((isSelected || isDropTarget) ? QPalette::BrightText : QPalette::Text);
+    painter->setPen(itemColor);
 
     const QString previewContent = index.data(kItemFileContentPreviewRole).toString();
     // 检查是否支持并需要显示内容预览
@@ -744,4 +763,54 @@ int ListItemDelegate::dataWidth(const QStyleOptionViewItem &option, const QModel
     }
 
     return -1;
+}
+
+// Group functionality implementation
+int ListItemDelegate::getGroupHeaderHeight(const QStyleOptionViewItem &option) const
+{
+    // Use the same height as a regular file item in list mode
+    QStyleOptionViewItem fileItemOption = option;
+    return BaseItemDelegate::sizeHint(fileItemOption, QModelIndex()).height();
+}
+
+QRectF ListItemDelegate::getGroupHeaderBackgroundRect(const QStyleOptionViewItem &option) const
+{
+    FileView *view = parent()->parent();
+    if (!view)
+        return option.rect;
+
+    // Use the same layout calculation as paintItemBackground for consistency
+    int totalWidth = view->getHeaderViewWidth() - (kListModeLeftMargin + kListModeRightMargin);
+
+    QRectF rect = option.rect;
+    rect.setLeft(rect.left() + kListModeLeftMargin);
+    rect.setWidth(totalWidth);
+
+    return rect;
+}
+
+bool ListItemDelegate::editorEvent(QEvent *event, QAbstractItemModel *model, const QStyleOptionViewItem &option, const QModelIndex &index)
+{
+    // Handle group header clicks
+    // if (isGroupHeaderItem(index) && event->type() == QEvent::MouseButtonPress) {
+    //     QMouseEvent *mouseEvent = static_cast<QMouseEvent *>(event);
+    //     handleGroupHeaderClick(mouseEvent, option, index);
+    //     return true;
+    // }
+
+    // Handle double-click on group headers for expand/collapse
+    // if (isGroupHeaderItem(index) && event->type() == QEvent::MouseButtonDblClick) {
+    //     QMouseEvent *mouseEvent = static_cast<QMouseEvent *>(event);
+    //     if (mouseEvent->button() == Qt::LeftButton) {
+    //         // Extract group key from index
+    //         const QString groupKey = index.data(Global::kItemGroupHeaderKey).toString();
+    //         if (!groupKey.isEmpty()) {
+    //             emit const_cast<ListItemDelegate *>(this)->groupExpansionToggled(groupKey);
+    //         }
+    //         return true;
+    //     }
+    // }
+
+    // Call base class implementation for regular items
+    return BaseItemDelegate::editorEvent(event, model, option, index);
 }

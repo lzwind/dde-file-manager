@@ -259,7 +259,9 @@ bool FileUtils::isDesktopFileInfo(const FileInfoPointer &info)
 {
     Q_ASSERT(info);
     const QString &suffix = info->nameOf(NameInfoType::kSuffix);
-    if (suffix == DFMBASE_NAMESPACE::Global::Scheme::kDesktop) {
+    if (suffix == DFMBASE_NAMESPACE::Global::Scheme::kDesktop
+        || info->urlOf(UrlInfoType::kParentUrl).path() == StandardPaths::location(StandardPaths::StandardLocation::kDesktopPath)
+        || info->extendAttributes(ExtInfoType::kFileLocalDevice).toBool()) {
         const QUrl &url = info->urlOf(UrlInfoType::kUrl);
         QMimeType type = info->fileMimeType();
         if (!type.isValid())
@@ -685,66 +687,6 @@ QString FileUtils::cutFileName(const QString &name, int maxLength, bool useCharC
     }
 
     return tmpName;
-}
-
-QString FileUtils::nonExistSymlinkFileName(const QUrl &fileUrl, const QUrl &parentUrl)
-{
-    const FileInfoPointer &info = InfoFactory::create<FileInfo>(fileUrl);
-
-    if (info && DFMIO::DFile(fileUrl).exists()) {
-        QString baseName = info->displayOf(DisPlayInfoType::kFileDisplayName) == info->nameOf(NameInfoType::kFileName)
-                ? info->nameOf(NameInfoType::kBaseName)
-                : info->displayOf(DisPlayInfoType::kFileDisplayName);
-        QString shortcut = QObject::tr("Shortcut");
-        QString linkBaseName;
-
-        int number = 0;
-
-        forever {
-            if (info->isAttributes(OptInfoType::kIsFile)) {
-                if (info->nameOf(NameInfoType::kSuffix).isEmpty()) {
-                    if (number == 0) {
-                        linkBaseName = QString("%1 %2").arg(baseName, shortcut);
-                    } else {
-                        linkBaseName = QString("%1 %2%3").arg(baseName, shortcut, QString::number(number));
-                    }
-                } else {
-                    if (number == 0) {
-                        linkBaseName = QString("%1 %2.%3").arg(baseName, shortcut, info->nameOf(NameInfoType::kSuffix));
-                    } else {
-                        linkBaseName = QString("%1 %2%3.%4").arg(baseName, shortcut, QString::number(number), info->nameOf(NameInfoType::kSuffix));
-                    }
-                }
-            } else if (info->isAttributes(OptInfoType::kIsDir)) {
-                if (number == 0) {
-                    linkBaseName = QString("%1 %2").arg(baseName, shortcut);
-                } else {
-                    linkBaseName = QString("%1 %2%3").arg(baseName, shortcut, QString::number(number));
-                }
-            } else if (info->isAttributes(OptInfoType::kIsSymLink)) {
-                return QString();
-            }
-
-            if (parentUrl.isEmpty()) {
-                return linkBaseName;
-            }
-
-            QDir parentDir = QDir(parentUrl.path());
-            if (parentDir.exists(linkBaseName)) {
-                ++number;
-            } else {
-                // 链接文件失效后exists会返回false，通过lstat再次判断链接文件本身是否存在
-                auto strLinkPath = parentDir.filePath(linkBaseName).toStdString();
-                struct stat st;
-                if ((lstat(strLinkPath.c_str(), &st) == 0) && S_ISLNK(st.st_mode))
-                    ++number;
-                else
-                    return linkBaseName;
-            }
-        }
-    }
-
-    return QString();
 }
 
 QString FileUtils::toUnicode(const QByteArray &data, const QString &fileName)
@@ -1293,7 +1235,7 @@ QString FileUtils::normalPathToTrash(const QString &normal)
 bool FileUtils::supportLongName(const QUrl &url)
 {
     const static QList<QString> datas {
-        "vfat", "exfat", "ntfs", "fuseblk", "fuse.dlnfs"
+        "vfat", "exfat", "ntfs", "ntfs3", "fuseblk", "fuse.dlnfs", "udf"
     };
 
     const QString &fileSystem = dfmio::DFMUtils::fsTypeFromUrl(url);
@@ -1411,66 +1353,6 @@ float codecConfidenceForData(const QTextCodec *codec, const QByteArray &data, co
     return qMax(0.0f, c);
 }
 #endif
-
-Match::Match(const QString &group)
-{
-    for (const QString &key : Application::instance()->genericObtuselySetting()->keys(group)) {
-        const QString &value = Application::instance()->genericObtuselySetting()->value(group, key).toString();
-
-        int last_dir_split = value.lastIndexOf(QDir::separator());
-
-        if (last_dir_split >= 0) {
-            QString path = value.left(last_dir_split);
-
-            if (path.startsWith("~/")) {
-                path.replace(0, 1, QDir::homePath());
-            }
-
-            patternList << qMakePair(path, value.mid(last_dir_split + 1));
-        } else {
-            patternList << qMakePair(QString(), value);
-        }
-    }
-}
-
-bool Match::match(const QString &path, const QString &name)
-{
-    // 这里可能会析构 先复制一份再循环
-    const QList<QPair<QString, QString>> patternListNew = patternList;
-    for (auto pattern : patternListNew) {
-        QRegularExpression re(QString(), QRegularExpression::MultilineOption);
-
-        if (!pattern.first.isEmpty()) {
-            re.setPattern(pattern.first);
-
-            if (!re.isValid()) {
-                qCWarning(logDFMBase) << re.errorString();
-                continue;
-            }
-
-            if (!re.match(path).hasMatch()) {
-                continue;
-            }
-        }
-
-        if (pattern.second.isEmpty()) {
-            return true;
-        }
-
-        re.setPattern(pattern.second);
-
-        if (!re.isValid()) {
-            qCWarning(logDFMBase) << re.errorString();
-            continue;
-        }
-
-        if (re.match(name).hasMatch()) {
-            return true;
-        }
-    }
-
-    return false;
-}
 
 QString FileUtils::findIconFromXdg(const QString &iconName)
 {

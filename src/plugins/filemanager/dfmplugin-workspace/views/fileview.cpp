@@ -78,6 +78,8 @@ FileView::FileView(const QUrl &url, QWidget *parent)
     setDefaultDropAction(Qt::CopyAction);
     setDragDropOverwriteMode(true);
     setDragEnabled(true);
+    setAutoScroll(true);
+    setAutoScrollMargin(32);
 //  TODO (search): perf
 //  setLayoutMode(QListView::Batched);
 #ifdef QT_SCROLL_WHEEL_ANI
@@ -94,6 +96,7 @@ FileView::FileView(const QUrl &url, QWidget *parent)
     initializeConnect();
     initializeScrollBarWatcher();
     initializePreSelectTimer();
+    initializeGroupHeaderTimer();
 
     viewport()->installEventFilter(this);
 }
@@ -102,13 +105,29 @@ FileView::~FileView()
 {
     fmInfo() << "Destroying FileView for URL:" << rootUrl();
 
-    disconnect(model(), &FileViewModel::stateChanged, this, &FileView::onModelStateChanged);
-    disconnect(selectionModel(), &QItemSelectionModel::selectionChanged, this, &FileView::onSelectionChanged);
+    // 关键修复: 必须在基类(QAbstractItemView)析构前解绑 model
+    // 原因: QAbstractItemView 持有 QPersistentModelIndex,如果 model 先于基类析构,
+    //      这些 QPersistentModelIndex 析构时会访问已释放的 model 导致崩溃
 
+    // 1. 断开信号连接
+    if (model()) {
+        disconnect(model(), nullptr, this, nullptr);
+    }
+    if (selectionModel()) {
+        disconnect(selectionModel(), nullptr, this, nullptr);
+    }
+
+    // 2. 解绑 model (关键步骤!)
+    // 这会触发 QAbstractItemView 清理所有 QPersistentModelIndex
+    DListView::setModel(nullptr);
+
+    // 3. 清理其他订阅
     dpfSignalDispatcher->unsubscribe("dfmplugin_workspace", "signal_View_HeaderViewSectionChanged", this, &FileView::onHeaderViewSectionChanged);
     dpfSignalDispatcher->unsubscribe("dfmplugin_filepreview", "signal_ThumbnailDisplay_Changed", this, &FileView::onWidgetUpdate);
 
     fmDebug() << "FileView destruction completed";
+
+    // 注意: model 作为 FileView 的子对象,会在基类析构后由 Qt 自动释放
 }
 
 QWidget *FileView::widget() const
@@ -152,13 +171,10 @@ void FileView::setViewMode(Global::ViewMode mode)
     case Global::ViewMode::kIconMode:
         d->initHorizontalOffset = false;
         setUniformItemSizes(false);
-        setResizeMode(Adjust);
+        setResizeMode(QListView::Adjust);
         setOrientation(QListView::LeftToRight, true);
-#ifdef DTKWIDGET_CLASS_DSizeMode
-        setSpacing(DSizeModeHelper::element(kCompactIconViewSpacing, kIconViewSpacing));
-#else
-        setSpacing(kIconViewSpacing);
-#endif
+
+        d->adjustIconModeSpacing(model()->groupingStrategy());
         d->initIconModeView();
         setMinimumWidth(0);
         model()->setTreeView(false);
@@ -241,6 +257,13 @@ bool FileView::setRootUrl(const QUrl &url)
     resetSelectionModes();
     updateListHeaderView();
 
+    // Adjust header layout margins based on grouping state for list/tree mode
+    // This handles both initialization and directory switching scenarios
+    d->adjustHeaderLayoutMargin(model()->groupingStrategy());
+
+    // 初始化分组状态追踪
+    d->previousGroupStrategy = model()->groupingStrategy();
+
     // dir already traversal
     if (model()->currentState() == ModelState::kIdle)
         updateSelectedUrl();
@@ -310,12 +333,27 @@ FileViewModel *FileView::model() const
 
 void FileView::setModel(QAbstractItemModel *model)
 {
-    if (model->parent() != this)
-        model->setParent(this);
-    auto curr = FileView::model();
-    if (curr)
-        delete curr;
-    DListView::setModel(model);
+    // 1. 获取旧 model
+    auto oldModel = FileView::model();
+
+    // 2. 先解绑旧 model (关键!)
+    // 必须先调用 DListView::setModel(nullptr) 来清理 QAbstractItemView 中的 QPersistentModelIndex
+    if (oldModel) {
+        DListView::setModel(nullptr);
+        // 只删除我们拥有的 model (通过 QObject 父子关系判断)
+        if (oldModel->QObject::parent() == this) {
+            delete oldModel;
+        }
+    }
+
+    // 3. 设置新 model
+    if (model) {
+        // 如果没有 parent,设置为 this,这样 Qt 会自动管理生命周期
+        if (!model->QObject::parent()) {
+            model->setParent(this);
+        }
+        DListView::setModel(model);
+    }
 }
 
 void FileView::stopWork(const QUrl &newUrl)
@@ -494,6 +532,11 @@ void FileView::onSortIndicatorChanged(int logicalIndex, Qt::SortOrder order)
 
 void FileView::onClicked(const QModelIndex &index)
 {
+    d->lastClickedIndex = index;
+    if (isGroupHeader(index)) {
+        d->groupHeaderTimer->start();
+        return;
+    }
     openIndexByClicked(ClickedAction::kClicked, index);
 
     QUrl url { "" };
@@ -511,6 +554,11 @@ void FileView::onClicked(const QModelIndex &index)
 void FileView::onDoubleClicked(const QModelIndex &index)
 {
     fmDebug() << "Item double clicked for URL:" << rootUrl().toString();
+    if (isGroupHeader(index)) {
+        d->groupHeaderTimer->stop();
+        groupExpandOrCollapseItem(index, QPoint(), false);
+        return;
+    }
     openIndexByClicked(ClickedAction::kDoubleClicked, index);
 }
 
@@ -605,6 +653,13 @@ FileView::RandeIndexList FileView::visibleIndexes(const QRect &rect) const
 
         list << RandeIndex(qMax(firstIndex, 0), qMin(lastIndex, count - 1));
     } else if (isIconViewMode()) {
+
+        // 分组绘制时计算区域内的list
+        if (isGroupHeader(model()->index(0, 0, rootIndex()))) {
+            list << calcGroupRectContiansIndexes(rect);
+            return list;
+        }
+
         int columnCount = d->calcColumnCount(rect.width(), itemSize.width());
 
         list << calcRectContiansIndexes(columnCount, rect);
@@ -776,6 +831,43 @@ void FileView::setSort(const ItemRoles role, const Qt::SortOrder order)
         Q_UNUSED(blocker)
         d->headerView->setSortIndicator(column, order);
     }
+}
+
+void FileView::setGroup(const QString &strategyName, const Qt::SortOrder order)
+{
+    if (model()->currentState() == ModelState::kBusy)
+        return;
+    if (strategyName == model()->groupingStrategy() && order == model()->groupingOrder())
+        return;
+
+    fmInfo() << "Setting group strategy:" << strategyName << "order:" << (order == Qt::AscendingOrder ? "Ascending" : "Descending")
+             << "for URL:" << rootUrl().toString();
+
+    // 在分组开始前保存当前的分组策略
+    d->previousGroupStrategy = model()->groupingStrategy();
+
+    model()->grouping(strategyName, order);
+
+    const QUrl &url = rootUrl();
+
+    // 搜索使用了 kKeepOrder 作为属性避免搜索过程中排序
+    // 此处使用 kKeepOrder 不持久化存储分组状态，那么搜索过程将不会被分组
+    auto dirIterator = DirIteratorFactory::create<AbstractDirIterator>(url, {});
+    bool keepOrder = dirIterator && dirIterator->property(IteratorProperty::kKeepOrder).toBool();
+    if (url.isValid() && !keepOrder) {
+        setFileViewStateValue(url, "groupStrategy", strategyName);
+        setFileViewStateValue(url, "groupingOrder", static_cast<int>(order));
+    }
+
+    // Dynamically adjust header layout margins based on grouped view state
+    // For list/tree mode: remove bottom margin when in grouped view to eliminate gap above first group-header
+    d->adjustHeaderLayoutMargin(strategyName);
+    d->adjustIconModeSpacing(strategyName);
+}
+
+GroupingState FileView::groupingState()
+{
+    return model()->groupingState();
 }
 
 void FileView::setViewSelectState(bool isSelect)
@@ -989,13 +1081,17 @@ QRect FileView::calcVisualRect(int widgetWidth, int index) const
     rect.setSize(itemSize);
 
     // 计算水平居中偏移，仅当行数大于1时才应用
-    int totalItems = model()->rowCount();
-    int rowCount = (totalItems + columnCount - 1) / columnCount;   // 向上取整
-    if (rowCount > 1) {   // 计算可用宽度（减去左右边距）
-        int availableWidth = widgetWidth - 2 * iconHorizontalMargin;
-        int totalItemsWidth = columnCount * itemSize.width() + (columnCount - 1) * 2 * iconViewSpacing;
-        int horizontalOffset = (availableWidth - totalItemsWidth) / 2;
-        rect.moveLeft(rect.left() + horizontalOffset);
+    // In group mode, don't apply horizontal centering to keep group headers left-aligned
+    if (!isGroupedView()) {
+        int totalItems = model()->rowCount();
+        int rowCount = (totalItems + columnCount - 1) / columnCount;   // 向上取整
+        if (rowCount > 1) {
+            // 计算可用宽度（减去左右边距）
+            int availableWidth = widgetWidth - 2 * iconHorizontalMargin;
+            int totalItemsWidth = columnCount * itemSize.width() + (columnCount - 1) * 2 * iconViewSpacing;
+            int horizontalOffset = (availableWidth - totalItemsWidth) / 2;
+            rect.moveLeft(rect.left() + horizontalOffset);
+        }
     }
 
     rect.moveTop(rect.top() - verticalOffset());
@@ -1200,7 +1296,7 @@ void FileView::onItemWidthLevelChanged(int level)
         return;
 
     // Check if this is an icon delegate that supports width level control
-    auto iconDelegate = dynamic_cast<IconItemDelegate*>(itemDelegate());
+    auto iconDelegate = dynamic_cast<IconItemDelegate *>(itemDelegate());
     if (!iconDelegate)
         return;
 
@@ -1242,6 +1338,16 @@ bool FileView::isListViewMode() const
 bool FileView::isTreeViewMode() const
 {
     return d->currentViewMode == Global::ViewMode::kTreeMode;
+}
+
+bool FileView::isGroupedView() const
+{
+    const auto strategyName = model()->groupingStrategy();
+
+    if (strategyName.isEmpty() || strategyName == GroupStrategy::kNoGroup)
+        return false;
+
+    return true;
 }
 
 void FileView::resetSelectionModes()
@@ -1295,22 +1401,14 @@ QModelIndex FileView::iconIndexAt(const QPoint &pos, const QSize &itemSize) cons
     if (isListViewMode() || isTreeViewMode())
         return QModelIndex();
 
-    int iconVerticalTopMargin = 0;
-#ifdef DTKWIDGET_CLASS_DSizeMode
-    iconVerticalTopMargin = DSizeModeHelper::element(kCompactIconVerticalTopMargin, spacing());
-#endif
-
     if (itemDelegate() && itemDelegate()->itemExpanded() && itemDelegate()->expandItemRect().contains(pos)) {
         return itemDelegate()->expandedIndex();
     }
 
-    QPoint actualPos = QPoint(pos.x() + horizontalOffset(), pos.y() + verticalOffset() - iconVerticalTopMargin);
-    auto index = FileViewHelper::caculateIconItemIndex(this, itemSize, actualPos);
+    auto currentIndex = DListView::indexAt(pos);
+    if (isGroupHeader(currentIndex))
+        return currentIndex;
 
-    if (index == -1 || index >= model()->rowCount(rootIndex()))
-        return QModelIndex();
-
-    auto currentIndex = model()->index(index, 0, rootIndex());
     auto paintRect = visualRect(currentIndex);
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
     auto opt = viewOptions();
@@ -1319,6 +1417,9 @@ QModelIndex FileView::iconIndexAt(const QPoint &pos, const QSize &itemSize) cons
     initViewItemOption(&opt);
 #endif
     opt.rect = paintRect;
+    if (!itemDelegate())
+        return QModelIndex();
+
     auto rectList = itemDelegate()->itemGeomertys(opt, currentIndex);
     for (const auto &rect : rectList) {
         if (rect.contains(pos))
@@ -1339,12 +1440,31 @@ bool FileView::expandOrCollapseItem(const QModelIndex &index, const QPoint &pos)
     if (expanded) {
         // do collapse
         fmInfo() << "do collapse item, index = " << index << index.row() << model()->data(index, kItemUrlRole).toUrl();
-        model()->doCollapse(index);
+        model()->toggleTreeItemCollapse(index);
     } else {
         // do expanded
         fmInfo() << "do expanded item, index = " << index << index.row() << model()->data(index, kItemUrlRole).toUrl();
-        model()->doExpand(index);
+        model()->toggleTreeItemExpansion(index);
     }
+
+    return true;
+}
+
+bool FileView::groupExpandOrCollapseItem(const QModelIndex &index, const QPoint &pos, const bool isArr)
+{
+    if (!isArr) {
+        onGroupExpansionToggled(index.data(kItemGroupHeaderKey).toString());
+        return true;
+    }
+    QStyleOptionViewItem op;
+    QRect rect = visualRect(index);   // 绘制区域
+    op.rect = rect;
+    QRect arrowRect = itemDelegate()->getExpandButtonRect(op);
+
+    if (!arrowRect.contains(pos))
+        return false;
+
+    onGroupExpansionToggled(index.data(kItemGroupHeaderKey).toString());
 
     return true;
 }
@@ -1535,6 +1655,11 @@ void FileView::mousePressEvent(QMouseEvent *event)
             }
         }
 
+        // 分组视图展开逻辑处理
+        if (isGroupHeader(index) && groupExpandOrCollapseItem(index, event->pos())) {
+            return;
+        }
+
         d->selectHelper->click(isEmptyArea ? QModelIndex() : index);
 
         if (isEmptyArea) {
@@ -1629,12 +1754,21 @@ void FileView::dragEnterEvent(QDragEnterEvent *event)
 
 void FileView::dragMoveEvent(QDragMoveEvent *event)
 {
+    // Always call parent implementation first - it includes auto-scroll logic
+
+    // Note: 此处一定要调用QAbstractItemView的dragMoveEvent,而非父类的。
+    // 这是因为QListView::dragMoveEvent中对viewMode的listview进行了特殊处理，导致后续
+    // 无法进入到QAbstractItemView::dragMoveEvent。
+    // 而当前类的viewMode是重定义的，并非QListView定义的ViewMode，这就导致图标模式
+    // 实际上被当作QListView::ListMode处理。最根因的解决方案应该是基于QAbstractItemView重写整个视图，
+    // 当前整个FileView的实现是畸形的，在QListView的实现上进行的魔改隐藏了很多问题
+    QAbstractItemView::dragMoveEvent(event);
+
+    // Handle drag-drop helper logic, but don't let it prevent Qt's auto-scroll logic
     if (d->dragDropHelper->dragMove(event)) {
         viewport()->update();
-        return;
+        // Note: We intentionally don't return here, so that both auto-scroll and dragDropHelper work
     }
-
-    DListView::dragMoveEvent(event);
 }
 
 void FileView::dragLeaveEvent(QDragLeaveEvent *event)
@@ -2074,6 +2208,21 @@ bool FileView::eventFilter(QObject *obj, QEvent *event)
 
 void FileView::paintEvent(QPaintEvent *event)
 {
+    // 仅在从无分组切换到有分组时才跳过绘制,避免UI异常
+    // 从一种分组策略切换到另一种分组策略时允许绘制,保持流畅性
+    if (model()->groupingState() == GroupingState::kGrouping) {
+        QString currentStrategy = model()->groupingStrategy();
+        bool isFromNoGroupToGrouped = (d->previousGroupStrategy == GroupStrategy::kNoGroup
+                                       && currentStrategy != GroupStrategy::kNoGroup);
+        if (isFromNoGroupToGrouped) {
+            fmDebug() << "Skipping paint during initial grouping from none to:" << currentStrategy;
+            return;
+        }
+        // 允许分组间切换时的绘制
+        fmDebug() << "Allow paint during group-to-group switch from:"
+                  << d->previousGroupStrategy << "to:" << currentStrategy;
+    }
+
     if (d->animationHelper->isWaitingToPlaying() || d->animationHelper->isAnimationPlaying()) {
         d->animationHelper->paintItems();
         itemDelegate()->hideAllIIndexWidget();
@@ -2082,6 +2231,8 @@ void FileView::paintEvent(QPaintEvent *event)
 
     if (d->horizontalOffset == 0)
         d->updateHorizontalOffset();
+
+    // 设置标志是否记录当前绘制的itemindex
     DListView::paintEvent(event);
 
     if (d->isShowViewSelectBox) {
@@ -2155,13 +2306,18 @@ void FileView::initializeDelegate()
     fmDebug() << "Initializing FileView delegates";
 
     d->fileViewHelper = new FileViewHelper(this);
-    setDelegate(Global::ViewMode::kIconMode, new IconItemDelegate(d->fileViewHelper));
-    setDelegate(Global::ViewMode::kListMode, new ListItemDelegate(d->fileViewHelper));
+
+    // Create delegates
+    auto iconDelegate = new IconItemDelegate(d->fileViewHelper);
+    auto listDelegate = new ListItemDelegate(d->fileViewHelper);
+
+    setDelegate(Global::ViewMode::kIconMode, iconDelegate);
+    setDelegate(Global::ViewMode::kListMode, listDelegate);
 
     d->itemsExpandable = DConfigManager::instance()->value(kViewDConfName, kTreeViewEnable, true).toBool()
             && WorkspaceHelper::instance()->isViewModeSupported(rootUrl().scheme(), DFMGLOBAL_NAMESPACE::ViewMode::kTreeMode);
 
-    fmDebug() << "Delegates initialized, items expandable:" << d->itemsExpandable;
+    fmDebug() << "Delegates initialized with grouping signal connections, items expandable:" << d->itemsExpandable;
 }
 
 void FileView::initializeStatusBar()
@@ -2207,13 +2363,10 @@ void FileView::initializeConnect()
     connect(Application::instance(), &Application::previewAttributeChanged, this, &FileView::onWidgetUpdate);
     connect(Application::instance(), &Application::viewModeChanged, this, &FileView::onDefaultViewModeChanged);
     connect(Application::appObtuselySetting(), &Settings::valueChanged, this, &FileView::onAppAttributeChanged);
-
-#ifdef DTKWIDGET_CLASS_DSizeMode
     connect(DGuiApplicationHelper::instance(), &DGuiApplicationHelper::sizeModeChanged, this, [this]() {
         if (d->currentViewMode == Global::ViewMode::kIconMode)
-            this->setSpacing(DSizeModeHelper::element(kCompactIconViewSpacing, kIconViewSpacing));
+            d->adjustIconModeSpacing(model()->groupingStrategy());
     });
-#endif
 
     dpfSignalDispatcher->subscribe("dfmplugin_workspace", "signal_View_HeaderViewSectionChanged", this, &FileView::onHeaderViewSectionChanged);
 
@@ -2259,10 +2412,23 @@ void FileView::initializeScrollBarWatcher()
         if (d->headerWidget && d->headerWidget->isVisible()) {
             auto headerLayout = d->headerWidget->layout();
             auto margins = headerLayout->contentsMargins();
-            if (value > 0 && margins.bottom() != 0)
+            if (value > 0 && margins.bottom() != 0) {
                 headerLayout->setContentsMargins(0, 0, 0, 0);
-            else if (value == 0 && margins.bottom() == 0)
+                QTimer::singleShot(0, this, [this]() {
+                    if (!d->headerView)
+                        return;
+                    int hVal = horizontalScrollBar() ? horizontalScrollBar()->value() : 0;
+                    d->headerView->syncOffset(hVal);
+                });
+            } else if (value == 0 && margins.bottom() == 0) {
                 headerLayout->setContentsMargins(0, 0, 0, 10);
+                QTimer::singleShot(0, this, [this]() {
+                    if (!d->headerView)
+                        return;
+                    int hVal = horizontalScrollBar() ? horizontalScrollBar()->value() : 0;
+                    d->headerView->syncOffset(hVal);
+                });
+            }
         }
     });
 }
@@ -2279,6 +2445,17 @@ void FileView::initializePreSelectTimer()
     });
 }
 
+void FileView::initializeGroupHeaderTimer()
+{
+    d->groupHeaderTimer = new QTimer(this);
+
+    d->groupHeaderTimer->setInterval(qApp->doubleClickInterval());
+    d->groupHeaderTimer->setSingleShot(true);
+    connect(d->groupHeaderTimer, &QTimer::timeout, this, [this] {
+        onGroupHeaderClicked(d->lastClickedIndex);
+    });
+}
+
 void FileView::updateStatusBar()
 {
     if (model()->currentState() != ModelState::kIdle) {
@@ -2289,8 +2466,10 @@ void FileView::updateStatusBar()
     int count = selectedIndexCount();
 
     if (count == 0) {
-        d->statusBar->itemCounted(model()->rowCount(rootIndex()));
-        fmDebug() << "Status bar updated: no selection, total items:" << model()->rowCount(rootIndex()) << "for URL:" << rootUrl().toString();
+        // Use file-only count for status bar (excludes group headers in grouped mode)
+        int totalCount = model()->getFileOnlyCount();
+        d->statusBar->itemCounted(totalCount);
+        fmDebug() << "Status bar updated: no selection, total items:" << totalCount << "for URL:" << rootUrl().toString();
         return;
     }
 
@@ -2432,7 +2611,7 @@ void FileView::setDefaultViewMode()
 void FileView::setListViewMode()
 {
     setUniformItemSizes(true);
-    setResizeMode(Fixed);
+    setResizeMode(QListView::Fixed);
     setOrientation(QListView::TopToBottom, false);
     setSpacing(kListViewSpacing);
 
@@ -2566,6 +2745,27 @@ void FileView::setFileViewStateValue(const QUrl &url, const QString &key, const 
     WorkspaceHelper::instance()->setFileViewStateValue(url, key, value);
 }
 
+FileView::RandeIndexList FileView::calcGroupRectContiansIndexes(const QRect &rect) const
+{
+    // 计算当前区域内的index，目前采用的是遍历的方式，这个有效率问题
+    // 后面优化，通过每行绘制个数，每个绘制大小，每个分组的个数，先计算出来大致的一个index的范围，再判断这个范围内的index
+    RandeIndexList list {};
+    int begin = -1, end = -1;
+    for (int i = 0; i < model()->rowCount(); ++i) {
+        auto indexRect = DListView::visualRect(model()->index(i, 0, rootIndex()));
+        if (rect.intersects(indexRect)) {
+            if (begin < 0)
+                begin = i;
+            end = i;
+        } else if (indexRect.top() >= rect.bottom() && indexRect.top() >= rect.top()) {
+            break;
+        }
+    }
+
+    list << RandeIndex(begin, end);
+    return list;
+}
+
 void FileView::saveViewModeState()
 {
     const QUrl &url = rootUrl();
@@ -2581,4 +2781,40 @@ void FileView::focusOnView()
 
     if (isVisible())
         setFocus();
+}
+
+bool FileView::isGroupHeader(const QModelIndex &index) const
+{
+    return !index.data(kItemGroupHeaderKey).toString().isEmpty();
+}
+
+// Grouping-related slot implementations
+void FileView::onGroupExpansionToggled(const QString &groupKey)
+{
+    fmDebug() << "Group expansion toggled for key:" << groupKey << "for URL:" << rootUrl().toString();
+
+    if (groupKey.isEmpty()) {
+        fmWarning() << "Cannot toggle expansion: empty group key";
+        return;
+    }
+
+    // Forward to model for handling
+    if (model()) {
+        model()->toggleGroupExpansion(groupKey);
+    }
+}
+
+void FileView::onGroupHeaderClicked(const QModelIndex &index)
+{
+    fmDebug() << "Group header clicked for:" << index << "for URL:" << rootUrl().toString();
+
+    if (!index.isValid()) {
+        fmWarning() << "Cannot handle header click: empty group key";
+        return;
+    }
+
+    // Use SelectHelper to handle group selection
+    if (d->selectHelper) {
+        d->selectHelper->handleGroupHeaderClick(index, QApplication::keyboardModifiers());
+    }
 }

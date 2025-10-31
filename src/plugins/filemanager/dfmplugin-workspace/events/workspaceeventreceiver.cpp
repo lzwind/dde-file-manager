@@ -126,10 +126,16 @@ void WorkspaceEventReceiver::initConnection()
                             WorkspaceEventReceiver::instance(), &WorkspaceEventReceiver::handleGetNameFilter);
     dpfSlotChannel->connect(kCurrentEventSpace, "slot_Model_CurrentSortRole",
                             WorkspaceEventReceiver::instance(), &WorkspaceEventReceiver::handleCurrentSortRole);
+    dpfSlotChannel->connect(kCurrentEventSpace, "slot_Model_ColumnDisplayName",
+                            WorkspaceEventReceiver::instance(), &WorkspaceEventReceiver::handleColumnDisplayName);
     dpfSlotChannel->connect(kCurrentEventSpace, "slot_Model_ColumnRoles",
                             WorkspaceEventReceiver::instance(), &WorkspaceEventReceiver::handleColumnRoles);
     dpfSlotChannel->connect(kCurrentEventSpace, "slot_Model_SetSort",
                             WorkspaceEventReceiver::instance(), &WorkspaceEventReceiver::handleSetSort);
+    dpfSlotChannel->connect(kCurrentEventSpace, "slot_Model_CurrentGroupStrategy",
+                            WorkspaceEventReceiver::instance(), &WorkspaceEventReceiver::handleCurrentGroupStrategy);
+    dpfSlotChannel->connect(kCurrentEventSpace, "slot_Model_SetGroup",
+                            WorkspaceEventReceiver::instance(), &WorkspaceEventReceiver::handleSetGroup);
     dpfSlotChannel->connect(kCurrentEventSpace, "slot_Model_RegisterDataCache",
                             WorkspaceEventReceiver::instance(), &WorkspaceEventReceiver::handleRegisterDataCache);
     dpfSlotChannel->connect(kCurrentEventSpace, "slot_View_AboutToChangeViewWidth",
@@ -187,6 +193,17 @@ void WorkspaceEventReceiver::handleSetSort(quint64 windowId, ItemRoles role)
 {
     fmDebug() << "WorkspaceEventReceiver: handling set sort request for window" << windowId << "role" << static_cast<int>(role);
     WorkspaceHelper::instance()->setSort(windowId, role);
+}
+
+QString WorkspaceEventReceiver::handleCurrentGroupStrategy(quint64 windowId)
+{
+    return WorkspaceHelper::instance()->getGroupingStrategy(windowId);
+}
+
+void WorkspaceEventReceiver::handleSetGroup(quint64 windowId, const QString &strategyName)
+{
+    fmDebug() << "WorkspaceEventReceiver: handling set group request for window" << windowId << " strategy" << strategyName;
+    WorkspaceHelper::instance()->setGroupingStrategy(windowId, strategyName);
 }
 
 void WorkspaceEventReceiver::handleSetSelectionMode(const quint64 windowId, const QAbstractItemView::SelectionMode mode)
@@ -287,6 +304,11 @@ void WorkspaceEventReceiver::handleFileUpdate(const QUrl &url)
 {
     fmDebug() << "WorkspaceEventReceiver: handling file update request for URL" << url.toString();
     WorkspaceHelper::instance()->fileUpdate(url);
+}
+
+QString WorkspaceEventReceiver::handleColumnDisplayName(quint64 windowId, dfmbase::Global::ItemRoles role)
+{
+    return WorkspaceHelper::instance()->roleDisplayName(windowId, role);
 }
 
 ItemRoles WorkspaceEventReceiver::handleCurrentSortRole(quint64 windowId)

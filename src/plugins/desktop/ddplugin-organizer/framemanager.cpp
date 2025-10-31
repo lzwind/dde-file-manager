@@ -30,6 +30,14 @@ using namespace ddplugin_organizer;
 FrameManagerPrivate::FrameManagerPrivate(FrameManager *qq)
     : QObject(qq), q(qq)
 {
+    layoutTimer = new QTimer(this);
+    layoutTimer->setInterval(1000);
+    layoutTimer->setSingleShot(true);
+    connect(layoutTimer, &QTimer::timeout, this, [this]{
+        if (organizer) {
+            organizer->layout();
+        }
+    });
 }
 
 FrameManagerPrivate::~FrameManagerPrivate()
@@ -67,7 +75,6 @@ void FrameManagerPrivate::buildSurface()
         for (const QString &sp : surfaceWidgets.keys()) {
             if (!rootMap.contains(sp)) {
                 surfaceWidgets.take(sp);
-                fmInfo() << "remove surface:" << sp;
             }
         }
     }
@@ -165,7 +172,7 @@ void FrameManagerPrivate::onHideAllKeyPressed()
                 .method(QString("Notify"))
                 .arg(tr("Desktop organizer"))
                 .arg(notifyId)
-                .arg(QString("dde-desktop"))
+                .arg(QString("deepin-toggle-desktop"))
                 .arg(tr("Shortcut \"%1\" to show collections").arg(keySequence))
                 .arg(tips)
                 .arg(QStringList { "close-notify", tr("Close"), "no-repeat", tr("No more prompts") })
@@ -187,6 +194,8 @@ void FrameManagerPrivate::enableChanged(bool e)
         q->turnOn();
     } else {
         q->turnOff();
+        if (CfgPresenter->organizeOnTriggered())
+            CfgPresenter->saveNormalProfile({});   // feature
     }
 }
 
@@ -253,18 +262,6 @@ void FrameManagerPrivate::showOptionWindow()
     options->show();
 }
 
-void FrameManagerPrivate::onOrganizered()
-{
-    if (organizer) {
-        fmDebug() << "Organizer already exists, skipping reorganization";
-        return;
-    }
-
-    q->onBuild();
-    for (const SurfacePointer &sur : surfaceWidgets.values())
-        sur->show();
-}
-
 QWidget *FrameManagerPrivate::findView(QWidget *root) const
 {
     if (Q_UNLIKELY(!root))
@@ -309,10 +306,9 @@ bool FrameManager::initialize()
     bool enable = CfgPresenter->isEnable();
     fmInfo() << "Organizer enable:" << enable;
     if (enable)
-        turnOn();   // builded by signal.
+        turnOn(false);   // builded by signal.
 
     connect(CfgPresenter, &ConfigPresenter::changeEnableState, d, &FrameManagerPrivate::enableChanged, Qt::QueuedConnection);
-    connect(CfgPresenter, &ConfigPresenter::reorganizeDesktop, d, &FrameManagerPrivate::onOrganizered, Qt::QueuedConnection);
     connect(CfgPresenter, &ConfigPresenter::changeEnableVisibilityState, d, &FrameManagerPrivate::enableVisibility, Qt::QueuedConnection);
     connect(CfgPresenter, &ConfigPresenter::changeHideAllKeySequence, d, &FrameManagerPrivate::saveHideAllSequence, Qt::QueuedConnection);
     connect(CfgPresenter, &ConfigPresenter::switchToNormalized, d, &FrameManagerPrivate::switchToNormalized, Qt::QueuedConnection);
@@ -357,7 +353,7 @@ void FrameManager::switchMode(OrganizerMode mode)
     d->organizer->initialize(d->model);
 }
 
-void FrameManager::turnOn()
+void FrameManager::turnOn(bool build)
 {
     fmInfo() << "Turning on organizer framework";
 
@@ -382,6 +378,14 @@ void FrameManager::turnOn()
 
     d->model = new CollectionModel(this);
     d->model->setModelShell(d->canvas->fileInfoModel());
+
+    if (build) {
+        onBuild();
+
+        // show surface
+        for (const SurfacePointer &sur : d->surfaceWidgets.values())
+            sur->setVisible(true);
+    }
 }
 
 void FrameManager::turnOff()
@@ -432,7 +436,7 @@ void FrameManager::onBuild()
 
     if (d->organizer) {
         d->organizer->setSurfaces(d->surfaces());
-        d->organizer->layout();
+        d->layoutTimer->start();
     } else {
         d->buildOrganizer();
     }

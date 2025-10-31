@@ -193,6 +193,7 @@ QStringList BaseSortMenuScenePrivate::primaryMenuRule()
         ret.append("display-as");   // 显示方式
 
         ret.append("sort-by");   // 排序方式
+        ret.append("group-by");   // 分组方式
 
         ret.append("icon-size");   // icon size
         ret.append(ActionID::kSeparatorLine);
@@ -259,14 +260,18 @@ QMap<QString, QStringList> BaseSortMenuScenePrivate::secondaryMenuRule()
 
         ret.insert("sort-by",
                    QStringList { "sort-by-name",
-                                 "sort-by-path",
-                                 "sort-by-source-path",
-                                 "sort-by-lastRead",
                                  "sort-by-time-modified",
                                  "sort-by-time-created",
-                                 "sort-by-time-deleted",
                                  "sort-by-size",
                                  "sort-by-type" });   // 排序方式
+
+        ret.insert("group-by",
+                   QStringList { "group-by-none",
+                                 "group-by-name",
+                                 "group-by-time-modified",
+                                 "group-by-time-created",
+                                 "group-by-size",
+                                 "group-by-type" });   // 分组方式
 
         ret.insert("icon-size",
                    QStringList { "tiny",

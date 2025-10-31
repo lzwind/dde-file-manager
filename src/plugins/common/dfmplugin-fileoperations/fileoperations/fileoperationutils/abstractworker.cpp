@@ -157,6 +157,8 @@ void AbstractWorker::getAction(AbstractJobHandler::SupportActions actions)
         retry = workData->signalThread ? false : true;
     } else if (actions.testFlag(AbstractJobHandler::SupportAction::kEnforceAction)) {
         currentAction = AbstractJobHandler::SupportAction::kEnforceAction;
+    } else if (actions.testFlag(AbstractJobHandler::SupportAction::kPermanentlyDelete)) {
+        currentAction = AbstractJobHandler::SupportAction::kPermanentlyDelete;
     } else {
         currentAction = AbstractJobHandler::SupportAction::kNoAction;
     }
@@ -169,11 +171,18 @@ QUrl AbstractWorker::parentUrl(const QUrl &url)
 
 void AbstractWorker::syncFilesToDevice()
 {
-    // Only sync when copying to external devices and sync is enabled
+    // Check if sync is needed (needsSync now excludes exBlockSyncEveryWrite condition)
     if (!needsSync())
         return;
 
-    performSync();
+    // Decide sync type based on exBlockSyncEveryWrite flag
+    if (workData && workData->exBlockSyncEveryWrite) {
+        // Blocking sync
+        performSync();
+    } else {
+        // Non-blocking sync via D-Bus
+        performAsyncSync();
+    }
 }
 
 FileInfo::FileType AbstractWorker::fileType(const DFileInfoPointer &info)

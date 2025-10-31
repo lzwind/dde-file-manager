@@ -63,6 +63,7 @@ class FileViewPrivate
     // move cursor later selecte index when pressed key shift
     QModelIndex lastCursorIndex;
     QModelIndex lastMousePressedIndex;
+    QModelIndex lastClickedIndex;
 
     int horizontalOffset { 0 };
     int cachedViewWidth { -1 };
@@ -72,6 +73,7 @@ class FileViewPrivate
 
     QList<QUrl> preSelectionUrls;
     QTimer *preSelectTimer { nullptr };
+    QTimer *groupHeaderTimer { nullptr };
 
     QList<DFMGLOBAL_NAMESPACE::ItemRoles> columnRoles;
     QMap<QString, bool> columnForRoleHiddenMap;
@@ -88,6 +90,7 @@ class FileViewPrivate
 
     bool itemsExpandable { false };
     std::atomic_bool isShowSmbMountError { false };
+    QString previousGroupStrategy { GroupStrategy::kNoGroup };
 
     explicit FileViewPrivate(FileView *qq);
     int iconModeColumnCount(int itemWidth = 0) const;
@@ -107,6 +110,9 @@ class FileViewPrivate
     QVariant fileViewStateValue(const QUrl &url, const QString &key, const QVariant &defalutValue);
 
     void updateHorizontalOffset();
+    // 使用 strategyName 是因为当 setGroup 时，model并不是分组状态
+    void adjustHeaderLayoutMargin(const QString &strategyName);
+    void adjustIconModeSpacing(const QString &strategyName);
 };
 
 }

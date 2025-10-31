@@ -15,6 +15,7 @@
 #include <dfm-base/dfm_global_defines.h>
 #include <dfm-base/dfm_event_defines.h>
 #include <dfm-base/base/configs/dconfig/dconfigmanager.h>
+#include <dfm-base/widgets/filemanagerwindowsmanager.h>
 
 #include <dfm-framework/dpf.h>
 
@@ -37,6 +38,7 @@ SortAndDisplayMenuScene::SortAndDisplayMenuScene(QObject *parent)
 {
     fmDebug() << "SortAndDisplayMenuScene initialized";
     d->predicateName[ActionID::kSortBy] = tr("Sort by");
+    d->predicateName[ActionID::kGroupBy] = QObject::tr("Group by");
     d->predicateName[ActionID::kDisplayAs] = tr("Display as");
 
     // 排序子菜单
@@ -45,6 +47,14 @@ SortAndDisplayMenuScene::SortAndDisplayMenuScene(QObject *parent)
     d->predicateName[ActionID::kSrtTimeCreated] = tr("Time created");
     d->predicateName[ActionID::kSrtSize] = tr("Size");
     d->predicateName[ActionID::kSrtType] = tr("Type");
+
+    // 分组子菜单
+    d->predicateName[ActionID::kGroupByNone] = QObject::tr("None");
+    d->predicateName[ActionID::kGroupByName] = QObject::tr("Name");
+    d->predicateName[ActionID::kGroupByModified] = QObject::tr("Time modified");
+    d->predicateName[ActionID::kGroupByCreated] = QObject::tr("Time created");
+    d->predicateName[ActionID::kGroupBySize] = QObject::tr("Size");
+    d->predicateName[ActionID::kGroupByType] = QObject::tr("Type");
 
     // 显示子菜单
     d->predicateName[ActionID::kDisplayIcon] = tr("Icon");
@@ -191,6 +201,51 @@ bool SortAndDisplayMenuScene::triggered(QAction *action)
                 return true;
             }
         }
+
+        // group by
+        {
+            // group by none
+            if (actionId == ActionID::kGroupByNone) {
+                fmInfo() << "Setting group by none";
+                d->groupByStrategy(GroupStrategy::kNoGroup);
+                return true;
+            }
+
+            // group by name
+            if (actionId == ActionID::kGroupByName) {
+                fmInfo() << "Grouping by name";
+                d->groupByStrategy(GroupStrategy::kName);
+                return true;
+            }
+
+            // group by time modified
+            if (actionId == ActionID::kGroupByModified) {
+                fmInfo() << "Grouping by time modified";
+                d->groupByStrategy(GroupStrategy::kModifiedTime);
+                return true;
+            }
+
+            // group by time created
+            if (actionId == ActionID::kGroupByCreated) {
+                fmInfo() << "Grouping by time created";
+                d->groupByStrategy(GroupStrategy::kCreatedTime);   // TimeStrategy handles both
+                return true;
+            }
+
+            // group by size
+            if (actionId == ActionID::kGroupBySize) {
+                fmInfo() << "Grouping by size";
+                d->groupByStrategy(GroupStrategy::kSize);
+                return true;
+            }
+
+            // group by type
+            if (actionId == ActionID::kGroupByType) {
+                fmInfo() << "Grouping by type";
+                d->groupByStrategy(GroupStrategy::kType);
+                return true;
+            }
+        }
     }
 
     return AbstractMenuScene::triggered(action);
@@ -219,6 +274,11 @@ void SortAndDisplayMenuScenePrivate::createEmptyMenu(QMenu *parent)
     tempAction->setMenu(addSortByActions(parent));
     predicateAction[ActionID::kSortBy] = tempAction;
     tempAction->setProperty(ActionPropertyKey::kActionID, QString(ActionID::kSortBy));
+
+    tempAction = parent->addAction(predicateName.value(ActionID::kGroupBy));
+    tempAction->setMenu(addGroupByActions(parent));
+    predicateAction[ActionID::kGroupBy] = tempAction;
+    tempAction->setProperty(ActionPropertyKey::kActionID, QString(ActionID::kGroupBy));
 
     fmDebug() << "Empty area menu created with" << predicateAction.size() << "main actions";
 }
@@ -257,6 +317,45 @@ QMenu *SortAndDisplayMenuScenePrivate::addSortByActions(QMenu *menu)
     return subMenu;
 }
 
+QMenu *SortAndDisplayMenuScenePrivate::addGroupByActions(QMenu *menu)
+{
+    fmDebug() << "Adding group by actions to submenu";
+    QMenu *subMenu = new QMenu(menu);
+
+    // GroupBy
+    QAction *tempAction = subMenu->addAction(predicateName.value(ActionID::kGroupByNone));
+    tempAction->setCheckable(true);
+    predicateAction[ActionID::kGroupByNone] = tempAction;
+    tempAction->setProperty(ActionPropertyKey::kActionID, QString(ActionID::kGroupByNone));
+
+    tempAction = subMenu->addAction(predicateName.value(ActionID::kGroupByName));
+    tempAction->setCheckable(true);
+    predicateAction[ActionID::kGroupByName] = tempAction;
+    tempAction->setProperty(ActionPropertyKey::kActionID, QString(ActionID::kGroupByName));
+
+    tempAction = subMenu->addAction(predicateName.value(ActionID::kGroupByModified));
+    tempAction->setCheckable(true);
+    predicateAction[ActionID::kGroupByModified] = tempAction;
+    tempAction->setProperty(ActionPropertyKey::kActionID, QString(ActionID::kGroupByModified));
+
+    tempAction = subMenu->addAction(predicateName.value(ActionID::kGroupByCreated));
+    tempAction->setCheckable(true);
+    predicateAction[ActionID::kGroupByCreated] = tempAction;
+    tempAction->setProperty(ActionPropertyKey::kActionID, QString(ActionID::kGroupByCreated));
+
+    tempAction = subMenu->addAction(predicateName.value(ActionID::kGroupBySize));
+    tempAction->setCheckable(true);
+    predicateAction[ActionID::kGroupBySize] = tempAction;
+    tempAction->setProperty(ActionPropertyKey::kActionID, QString(ActionID::kGroupBySize));
+
+    tempAction = subMenu->addAction(predicateName.value(ActionID::kGroupByType));
+    tempAction->setCheckable(true);
+    predicateAction[ActionID::kGroupByType] = tempAction;
+    tempAction->setProperty(ActionPropertyKey::kActionID, QString(ActionID::kGroupByType));
+
+    return subMenu;
+}
+
 QMenu *SortAndDisplayMenuScenePrivate::addDisplayAsActions(QMenu *menu)
 {
     fmDebug() << "Adding display as actions to submenu";
@@ -287,17 +386,13 @@ QMenu *SortAndDisplayMenuScenePrivate::addDisplayAsActions(QMenu *menu)
 
 void SortAndDisplayMenuScenePrivate::sortByRole(int role)
 {
-    auto itemRole = static_cast<Global::ItemRoles>(role);
-    Qt::SortOrder order = view->model()->sortOrder();
-    auto oldRole = view->model()->sortRole();
-    order = oldRole != role               ? Qt::AscendingOrder
-            : order == Qt::AscendingOrder ? Qt::DescendingOrder
-                                          : Qt::AscendingOrder;
+    WorkspaceHelper::instance()->setSort(FMWindowsIns.findWindowId(view),
+                                         static_cast<Global::ItemRoles>(role));
+}
 
-    fmDebug() << "Sorting by role:" << role << "order:" << (order == Qt::AscendingOrder ? "Ascending" : "Descending")
-              << "old role:" << oldRole;
-
-    view->setSort(itemRole, order);
+void SortAndDisplayMenuScenePrivate::groupByStrategy(const QString &strategyName)
+{
+    WorkspaceHelper::instance()->setGroupingStrategy(FMWindowsIns.findWindowId(view), strategyName);
 }
 
 void SortAndDisplayMenuScenePrivate::updateEmptyAreaActionState()
@@ -331,6 +426,32 @@ void SortAndDisplayMenuScenePrivate::updateEmptyAreaActionState()
     default:
         fmDebug() << "Unknown sort role:" << role;
         break;
+    }
+
+    // group by
+    QString currentStrategy = view->model()->groupingStrategy();
+    fmDebug() << "Current grouping strategy:" << currentStrategy;
+
+    if (currentStrategy == GroupStrategy::kNoGroup) {
+        predicateAction[ActionID::kGroupByNone]->setChecked(true);
+        fmDebug() << "Set group by none action as checked";
+    } else if (currentStrategy == GroupStrategy::kName) {
+        predicateAction[ActionID::kGroupByName]->setChecked(true);
+        fmDebug() << "Set group by name action as checked";
+    } else if (currentStrategy == GroupStrategy::kModifiedTime) {
+        predicateAction[ActionID::kGroupByModified]->setChecked(true);
+        fmDebug() << "Set group by time modified action as checked";
+    } else if (currentStrategy == GroupStrategy::kCreatedTime) {
+        predicateAction[ActionID::kGroupByCreated]->setChecked(true);
+        fmDebug() << "Set group by time created action as checked";
+    } else if (currentStrategy == GroupStrategy::kSize) {
+        predicateAction[ActionID::kGroupBySize]->setChecked(true);
+        fmDebug() << "Set group by size action as checked";
+    } else if (currentStrategy == GroupStrategy::kType) {
+        predicateAction[ActionID::kGroupByType]->setChecked(true);
+        fmDebug() << "Set group by type action as checked";
+    } else {
+        fmDebug() << "Unknown grouping strategy:" << currentStrategy;
     }
 
     // display as

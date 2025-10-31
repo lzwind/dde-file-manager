@@ -7,10 +7,13 @@
 
 #include "dfmplugin_workspace_global.h"
 #include "models/fileitemdata.h"
+#include "groups/groupingengine.h"
+#include "groups/groupedmodeldata.h"
+
+#include <dfm-base/interfaces/abstractgroupstrategy.h>
 #include <dfm-base/dfm_global_defines.h>
 #include <dfm-base/interfaces/fileinfo.h>
 #include <dfm-base/interfaces/abstractdiriterator.h>
-
 #include <dfm-base/base/application/application.h>
 
 #include <dfm-io/denumerator.h>
@@ -25,10 +28,17 @@ namespace dfmplugin_workspace {
 class FileSortWorker : public QObject
 {
     Q_OBJECT
+
     enum class SortOpt : uint8_t {
         kSortOptNone = 0,
         kSortOptOnlyOrderChanged = 1,
         kSortOptOtherChanged = 2,
+    };
+
+    enum class GroupingOpt : uint8_t {
+        kGroupingOptNone = 0,
+        kGroupingOptOnlyOrderChanged = 1,
+        kGroupingOptOtherChanged = 2,
     };
 
     enum class InsertOpt : uint8_t {
@@ -38,11 +48,24 @@ class FileSortWorker : public QObject
     };
 
     enum class SortScenarios : uint8_t {
-        kSortScenariosIteratorAddFile = 1,      // Iterator adding new files for sorting
-        kSortScenariosIteratorExistingFile = 2, // Iterator handling existing files in display model
-        kSortScenariosNormal = 3,               // Normal display completion scenario
-        kSortScenariosWatcherAddFile = 4,       // File watcher detected file addition (including rename)
-        kSortScenariosWatcherOther = 5,         // Other file watcher scenarios
+        kSortScenariosIteratorAddFile = 1,   // Iterator adding new files for sorting
+        kSortScenariosIteratorExistingFile = 2,   // Iterator handling existing files in display model
+        kSortScenariosNormal = 3,   // Normal display completion scenario
+        kSortScenariosWatcherAddFile = 4,   // File watcher detected file addition (including rename)
+        kSortScenariosWatcherOther = 5,   // Other file watcher scenarios
+    };
+
+    enum class ModelChangeType {
+        // normal
+        kInsertRows,
+        kInsertFinished,
+        kRemoveRows,
+        kRemoveFinished,
+        // group
+        kInsertGroupRows,
+        kInsertGroupFinished,
+        kRemoveGroupRows,
+        kRemoveGroupFinished
     };
 
 public:
@@ -51,13 +74,16 @@ public:
                             FileViewFilterCallback callfun = nullptr,
                             const QStringList &nameFilters = QStringList(),
                             const QDir::Filters filters = QDir::NoFilter,
-                            const QDirIterator::IteratorFlags flags = QDirIterator::NoIteratorFlags,
                             QObject *parent = nullptr);
     ~FileSortWorker();
-    SortOpt setSortAgruments(const Qt::SortOrder order, const dfmbase::Global::ItemRoles sortRole,
+    SortOpt setSortArguments(const Qt::SortOrder order, const dfmbase::Global::ItemRoles sortRole,
                              const bool isMixDirAndFile);
-    QUrl mapToIndex(int index);
+    GroupingOpt setGroupArguments(const Qt::SortOrder order, const QString &strategy,
+                                  const QVariantHash &expandStates);
+
     int childrenCount();
+    int getFileItemCount();
+    QVariant groupHeaderData(const int index, const int role);
     FileItemDataPointer childData(const int index);
     FileItemDataPointer childData(const QUrl &url);
     void setRootData(const FileItemDataPointer data);
@@ -66,19 +92,26 @@ public:
     int getChildShowIndex(const QUrl &url);
     QList<QUrl> getChildrenUrls();
 
-    QDir::Filters getFilters() const;
-
     DFMGLOBAL_NAMESPACE::ItemRoles getSortRole() const;
     Qt::SortOrder getSortOrder() const;
+    QString getGroupStrategyName() const;
+    Qt::SortOrder getGroupOrder() const;
 
     // 只有在没有启动sort线程时才能调用，线程启动成功了，发送信号处理
     void setTreeView(const bool isTree);
+    bool currentIsGroupingMode() const;
 
 signals:
+    // NOTE: 添加以下 Group 重复信号的原因是为了防止死循环
+    void insertGroupRows(int first, int count);
+    void insertGroupFinish();
+    void removeGroupRows(int first, int count);
+    void removeGroupFinish();
     void insertRows(int first, int count);
     void insertFinish();
     void removeRows(int first, int count);
     void removeFinish();
+
     void requestFetchMore();
     void selectAndEditFile(const QUrl &url);
     void dataChanged(int first, int last);
@@ -93,11 +126,15 @@ signals:
     void requestCursorWait();
     void reqUestCloseCursor();
 
+    // Grouping-related signals
+    void groupDataChanged();
+    void groupingFinished();   // 分组操作完成信号
+    void groupExpansionChanged(const QString &strategy, const QString &key, bool state);
+
     // Note that the slot functions here are executed in asynchronous threads,
     // so the link can only be Qt:: QueuedConnection,
     // which cannot be directly called elsewhere, but can only be triggered by signals
 signals:
-    void requestUpdateTimerStart();
     void requestSortByMimeType();
     void aboutToSwitchToListView(const QList<QUrl> &allShowList);
 
@@ -135,6 +172,7 @@ public slots:
     void handleWatcherUpdateHideFile(const QUrl &hidUrl);
 
     void handleResort(const Qt::SortOrder order, const Global::ItemRoles sortRole, const bool isMixDirAndFile);
+    void handleReGrouping(const Qt::SortOrder order, const QString &strategy, const QVariantHash &expansionStates);
     void onAppAttributeChanged(Application::ApplicationAttribute aa, const QVariant &value);
 
     bool handleUpdateFile(const QUrl &url);
@@ -146,8 +184,12 @@ public slots:
     void handleUpdateRefreshFiles();
     void handleSortByMimeType();
 
+    void handleAboutToInsertFilesToGroup(int pos, int count);
+    void handleAboutToRemoveFilesFromGroup(int pos, int count);
+
     // treeview solts
 public slots:
+    void handleToggleGroupExpansion(const QString &key, const QString &groupKey);
     void handleCloseExpand(const QString &key, const QUrl &parent);
     // 如果不是tree视图，切换到tree视图，就去执行处理dir是否可以展开属性设置
     // 如果是tree视图，切换到普通试图，去掉所有子目录，去掉所有的是否可以展开属性
@@ -218,17 +260,30 @@ private:
     void checkAndSortBytMimeType(const QUrl &url);
     void doCompleteFileInfo(SortInfoPointer sortInfo);
 
+    // Grouping-related private methods
+    QList<FileItemDataPointer> getAllFiles() const;
+    void applyGrouping(const QList<FileItemDataPointer> &files);
+    void clearGroupedData();
+
+    // Grouping update handlers
+    void handleGroupingInsert();
+    void handleGroupingRemove();
+    void handleGroupingUpdate();
+    void handleGroupingChanged();
+
+    int childrenCountInternal();
+    int getChildShowIndexInternal(const QUrl &url);
+    void doModelChanged(const ModelChangeType type, int index = 0, int count = 0);
+
 private:
     QUrl current;
     QStringList nameFilters {};
     QDir::Filters filters { QDir::NoFilter };
-    QDirIterator::IteratorFlags flags { QDirIterator::NoIteratorFlags };
     QHash<QUrl, QHash<QUrl, SortInfoPointer>> children {};
-    QReadWriteLock childrenDataLocker;
+    mutable QReadWriteLock childrenDataLocker;
     QHash<QUrl, FileItemDataPointer> childrenDataMap {};
-    QHash<QUrl, FileItemDataPointer> childrenDataLastMap {};
     QList<QUrl> visibleChildren {};
-    QReadWriteLock locker;
+    mutable QReadWriteLock locker;
     FileViewFilterCallback filterCallback { nullptr };
     QVariant filterData;
     FileItemDataPointer rootdata { nullptr };
@@ -236,9 +291,17 @@ private:
     Global::ItemRoles orgSortRole { Global::ItemRoles::kItemDisplayRole };
     Qt::SortOrder sortOrder { Qt::AscendingOrder };
     DFMIO::DEnumerator::SortRoleCompareFlag sortRole { DFMIO::DEnumerator::SortRoleCompareFlag::kSortRoleCompareDefault };
+
+    // New grouping-related members
+    Qt::SortOrder groupOrder { Qt::AscendingOrder };
+    std::unique_ptr<GroupingEngine> groupingEngine;
+    AbstractGroupStrategy *currentStrategy { nullptr };
+    GroupedModelData groupedModelData;
+    std::atomic_bool isCurrentGroupingEnabled { false };
+    QHash<QString, bool> groupExpansionStates;
+
     std::atomic_bool isCanceled { false };
     bool isMixDirAndFile { false };
-    char placeholderMemory[4];
     QHash<QUrl, QList<QUrl>> visibleTreeChildren {};
     QMultiMap<int8_t, QUrl> depthMap;
     std::atomic_bool istree { false };

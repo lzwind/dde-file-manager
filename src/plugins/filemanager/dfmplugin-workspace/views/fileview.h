@@ -36,6 +36,7 @@ class FileView final : public DListView, public DFMBASE_NAMESPACE::AbstractBaseV
     friend class FileViewPrivate;
     friend class FileViewHelper;
     friend class ViewAnimationHelper;
+    friend class IconItemDelegate;
 
     QSharedPointer<FileViewPrivate> d;
 
@@ -86,6 +87,9 @@ public:
     void reverseSelect() const;
     void setEnabledSelectionModes(const QList<SelectionMode> &modes);
     void setSort(const DFMGLOBAL_NAMESPACE::ItemRoles role, const Qt::SortOrder order);
+    void setGroup(const QString &strategyName, const Qt::SortOrder order = Qt::AscendingOrder);
+    GroupingState groupingState();
+
     void setViewSelectState(bool isSelect);
 
     void setFilterData(const QUrl &url, const QVariant &data);
@@ -197,6 +201,11 @@ private slots:
     void onIconSizeChanged(int sizeIndex);
     void onItemWidthLevelChanged(int level);
     void onItemHeightLevelChanged(int level);
+
+    // Grouping-related slots
+    void onGroupExpansionToggled(const QString &groupKey);
+    void onGroupHeaderClicked(const QModelIndex &index);
+
 private:
     void initializeModel();
     void initializeDelegate();
@@ -204,6 +213,7 @@ private:
     void initializeConnect();
     void initializeScrollBarWatcher();
     void initializePreSelectTimer();
+    void initializeGroupHeaderTimer();
 
     void delayUpdateStatusBar();
     void updateStatusBar();
@@ -222,6 +232,7 @@ private:
     RandeIndexList visibleIndexes(const QRect &rect) const;
     RandeIndexList rectContainsIndexes(const QRect &rect) const;
     RandeIndexList calcRectContiansIndexes(int columnCount, const QRect &rect) const;
+    RandeIndexList calcGroupRectContiansIndexes(const QRect &rect) const;
 
     QSize itemSizeHint() const;
 
@@ -231,6 +242,7 @@ private:
     bool isIconViewMode() const;
     bool isListViewMode() const;
     bool isTreeViewMode() const;
+    bool isGroupedView() const;
 
     void resetSelectionModes();
     QList<SelectionMode> fetchSupportSelectionModes();
@@ -238,10 +250,13 @@ private:
     bool cdUp();
     QModelIndex iconIndexAt(const QPoint &pos, const QSize &itemSize) const;
     bool expandOrCollapseItem(const QModelIndex &index, const QPoint &pos);
+    bool groupExpandOrCollapseItem(const QModelIndex &index, const QPoint &pos, const bool isArr = true);
 
     void recordSelectedUrls();
 
     void focusOnView();
+
+    bool isGroupHeader(const QModelIndex &index) const;
 };
 
 }

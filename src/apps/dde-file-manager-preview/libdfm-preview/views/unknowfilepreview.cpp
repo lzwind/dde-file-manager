@@ -6,6 +6,7 @@
 
 #include <dfm-base/utils/fileutils.h>
 #include <dfm-base/utils/elidetextlayout.h>
+#include <dfm-base/utils/thumbnail/thumbnailhelper.h>
 #include <dfm-base/base/schemefactory.h>
 
 #include <QVBoxLayout>
@@ -21,7 +22,7 @@ UnknowFilePreview::UnknowFilePreview(QObject *parent)
     : AbstractBasePreview(parent)
 {
     qCDebug(logLibFilePreview) << "UnknowFilePreview: initializing unknown file preview widget";
-    
+
     contentView = new QWidget();
     contentView->setFixedSize(590, 260);
     iconLabel = new QLabel(contentView);
@@ -62,14 +63,14 @@ UnknowFilePreview::UnknowFilePreview(QObject *parent)
 
     fileCalculationUtils = new FileStatisticsJob;
     connect(fileCalculationUtils, &FileStatisticsJob::dataNotify, this, &UnknowFilePreview::updateFolderSizeCount);
-    
+
     qCDebug(logLibFilePreview) << "UnknowFilePreview: initialization completed";
 }
 
 UnknowFilePreview::~UnknowFilePreview()
 {
     qCDebug(logLibFilePreview) << "UnknowFilePreview: destructor called";
-    
+
     if (contentView) {
         contentView->deleteLater();
     }
@@ -82,7 +83,7 @@ UnknowFilePreview::~UnknowFilePreview()
 bool UnknowFilePreview::setFileUrl(const QUrl &url)
 {
     qCInfo(logLibFilePreview) << "UnknowFilePreview: setting file URL:" << url.toString();
-    
+
     this->url = url;
     const FileInfoPointer info = InfoFactory::create<FileInfo>(url);
 
@@ -112,14 +113,28 @@ void UnknowFilePreview::setFileInfo(const FileInfoPointer &info)
         qCWarning(logLibFilePreview) << "UnknowFilePreview: null file info provided";
         return;
     }
-    
+
     qCDebug(logLibFilePreview) << "UnknowFilePreview: setting file info for:" << info->nameOf(NameInfoType::kFileName);
-    
+
     if (fileCalculationUtils) {
         fileCalculationUtils->stop();
     }
 
-    const QIcon &icon = info->fileIcon();
+    QIcon icon;
+    ThumbnailHelper helper;
+    if (helper.checkThumbEnable(url)) {
+        icon = info->extendAttributes(ExtInfoType::kFileThumbnail).value<QIcon>();
+        if (icon.isNull()) {
+            const auto &img = helper.thumbnailImage(url, Global::kLarge);
+            icon = QPixmap::fromImage(img);
+            if (!icon.isNull())
+                info->setExtendedAttributes(ExtInfoType::kFileThumbnail, icon);
+            else
+                icon = info->fileIcon();
+        }
+    } else {
+        icon = info->fileIcon();
+    }
     iconLabel->setPixmap(icon.pixmap(180));
 
     QFont font = nameLabel->font();
@@ -134,10 +149,10 @@ void UnknowFilePreview::setFileInfo(const FileInfoPointer &info)
     if (info->isAttributes(OptInfoType::kIsFile) || info->isAttributes(OptInfoType::kIsSymLink)) {
         QString sizeText = info->displayOf(DisPlayInfoType::kSizeDisplayName);
         QString typeText = info->displayOf(DisPlayInfoType::kMimeTypeDisplayName);
-        
+
         sizeLabel->setText(QObject::tr("Size: %1").arg(sizeText));
         typeLabel->setText(QObject::tr("Type: %1").arg(typeText));
-        
+
         qCDebug(logLibFilePreview) << "UnknowFilePreview: file info set - size:" << sizeText << "type:" << typeText;
     } else if (fileCalculationUtils && info->isAttributes(OptInfoType::kIsDir)) {
         qCInfo(logLibFilePreview) << "UnknowFilePreview: starting directory size calculation for:" << info->urlOf(UrlInfoType::kUrl).toString();
@@ -149,11 +164,12 @@ void UnknowFilePreview::setFileInfo(const FileInfoPointer &info)
 void UnknowFilePreview::updateFolderSizeCount(qint64 size, int filesCount, int directoryCount)
 {
     QString sizeText = FileUtils::formatSize(size);
-    int totalItems = filesCount + directoryCount;
-    
-    qCInfo(logLibFilePreview) << "UnknowFilePreview: folder size calculation completed - size:" << sizeText 
+    // 同“属性”对话框一致，不统计目录本身
+    int totalItems = filesCount + (directoryCount > 1 ? directoryCount - 1 : 0);
+
+    qCInfo(logLibFilePreview) << "UnknowFilePreview: folder size calculation completed - size:" << sizeText
                               << "files:" << filesCount << "directories:" << directoryCount << "total:" << totalItems;
-    
+
     sizeLabel->setText(QObject::tr("Size: %1").arg(sizeText));
     typeLabel->setText(QObject::tr("Items: %1").arg(totalItems));
 }

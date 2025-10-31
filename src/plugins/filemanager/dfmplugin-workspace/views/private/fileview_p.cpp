@@ -27,6 +27,7 @@
 #include <dfm-base/utils/viewdefines.h>
 
 #include <DGuiApplicationHelper>
+#include <DSizeMode>
 
 #include <QScrollBar>
 #include <QVBoxLayout>
@@ -114,9 +115,9 @@ void FileViewPrivate::initIconModeView()
 
     if (q->itemDelegate()) {
         q->itemDelegate()->setIconSizeByIconSizeLevel(currentIconSizeLevel);
-        
+
         // Set width level only for icon delegate
-        auto iconDelegate = dynamic_cast<IconItemDelegate*>(q->itemDelegate());
+        auto iconDelegate = dynamic_cast<IconItemDelegate *>(q->itemDelegate());
         if (iconDelegate) {
             iconDelegate->setItemMinimumWidthByWidthLevel(currentGridDensityLevel);
             fmDebug() << "Item delegate configured for icon mode - density level:" << currentGridDensityLevel;
@@ -168,13 +169,16 @@ void FileViewPrivate::initListModeView()
         QObject::connect(headerView, &HeaderView::sectionHandleDoubleClicked, q, &FileView::onSectionHandleDoubleClicked);
         QObject::connect(headerView, &HeaderView::hiddenSectionChanged, q, &FileView::onHeaderHiddenChanged);
         QObject::connect(q->horizontalScrollBar(), &QScrollBar::valueChanged, headerView, [=](int value) {
-            headerView->move(-value, headerView->y());
+            headerView->syncOffset(value);
         });
 
         fmDebug() << "Header view created and configured for list mode";
     }
 
     headerWidget->setVisible(true);
+
+    // Adjust header layout margin based on grouping state
+    adjustHeaderLayoutMargin(q->model()->groupingStrategy());
 
     if (statusBar) {
         statusBar->setScalingVisible(false);
@@ -302,6 +306,12 @@ void FileViewPrivate::updateHorizontalOffset()
 {
     horizontalOffset = 0;
     if (q->isIconViewMode()) {
+        // In group mode, don't apply horizontal offset to keep group headers left-aligned
+        if (q->isGroupedView()) {
+            columnCountByCalc = 1;   // Set to 1 to indicate single column for group mode
+            return;
+        }
+
         int contentWidth = q->maximumViewportSize().width();
         int itemWidth = q->itemSizeHint().width() + q->spacing() * 2;
         int itemColumn = 0;
@@ -309,10 +319,12 @@ void FileViewPrivate::updateHorizontalOffset()
             fmDebug() << "Invalid item width, skipping offset calculation";
             return;
         }
+
         // 根据qt虚函数去计算当前的itemColumn（每行绘制的个数）
         int startLeftPx = q->visualRect(q->model()->index(0, 0, q->rootIndex())).left();
         int rowCount = q->model()->rowCount(q->rootIndex());
         int maxColumnCount = qCeil(contentWidth / (60 + q->spacing() * 2)) + 2;   // 60是item最小宽度
+
         for (int i = 1; i < qMax(maxColumnCount, rowCount); i++) {
             int itemLeft = q->visualRect(q->model()->index(i, 0, q->rootIndex())).left();
             // NOTE：如果实际item数量不足以绘制到第二行，qt将不会在位置计算中加上边距，
@@ -338,5 +350,52 @@ void FileViewPrivate::updateHorizontalOffset()
             return;
         }
         horizontalOffset = -(contentWidth - itemWidth * itemColumn) / 2;
+    }
+}
+
+void FileViewPrivate::adjustHeaderLayoutMargin(const QString &strategyName)
+{
+    // Only adjust margins for list/tree mode
+    if (!(q->isListViewMode() || q->isTreeViewMode()))
+        return;
+
+    // Ensure headerWidget exists and is visible
+    if (!headerWidget || !headerWidget->isVisible())
+        return;
+
+    auto headerLayout = headerWidget->layout();
+    if (!headerLayout)
+        return;
+
+    // Determine margin based on grouping state
+    bool isGrouped = strategyName != GroupStrategy::kNoGroup;
+    int bottomMargin = isGrouped ? 0 : 10;
+
+    headerLayout->setContentsMargins(0, 0, 0, bottomMargin);
+    fmDebug() << "Header layout bottom margin adjusted to:" << bottomMargin
+              << "for grouped view:" << isGrouped << "URL:" << q->rootUrl().toString();
+}
+
+void FileViewPrivate::adjustIconModeSpacing(const QString &strategyName)
+{
+    if (!q->isIconViewMode())
+        return;
+
+    // Determine margin based on grouping state
+    bool isGrouped = strategyName != GroupStrategy::kNoGroup;
+    // In grouped icon mode, set spacing=0 to let delegate control spacing via sizeHint
+    if (isGrouped) {
+        q->setSpacing(0);
+        fmDebug() << "Icon mode: spacing set to 0 for grouped view";
+    } else {
+        q->setSpacing(DSizeModeHelper::element(kCompactIconViewSpacing, kIconViewSpacing));
+        fmDebug() << "Icon mode: spacing set to" << q->spacing() << "for non-grouped view";
+    }
+
+    // Trigger sizeHint update to add/remove virtual margins
+    if (auto iconDelegate = dynamic_cast<IconItemDelegate *>(q->itemDelegate())) {
+        iconDelegate->updateItemSizeHint();
+        q->doItemsLayout();
+        q->updateHorizontalOffset();
     }
 }

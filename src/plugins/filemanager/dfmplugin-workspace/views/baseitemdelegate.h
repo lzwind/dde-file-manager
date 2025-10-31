@@ -7,6 +7,8 @@
 
 #include "dfmplugin_workspace_global.h"
 
+#include <dfm-base/dfm_global_defines.h>
+
 #include <QStyledItemDelegate>
 #include <QTextOption>
 
@@ -124,10 +126,32 @@ public:
 
     void setPaintProxy(AbstractItemPaintProxy *proxy);
 
+    // Group rendering virtual interfaces
+    virtual bool isGroupHeaderItem(const QModelIndex &index) const;
+    virtual QSize getGroupHeaderSizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const;
+    virtual void paintGroupHeader(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const;
+
+    QRect getExpandButtonRect(const QStyleOptionViewItem &option) const;
+
 protected:
     explicit BaseItemDelegate(BaseItemDelegatePrivate &dd, FileViewHelper *parent);
 
     virtual void initStyleOption(QStyleOptionViewItem *option, const QModelIndex &index) const override;
+
+    // Pure virtual method for group header height - must be implemented by subclasses
+    virtual int getGroupHeaderHeight(const QStyleOptionViewItem &option) const = 0;
+
+    // Virtual method for group header background rect - can be overridden by subclasses
+    virtual QRectF getGroupHeaderBackgroundRect(const QStyleOptionViewItem &option) const;
+
+    // Group rendering helper methods
+    void paintGroupBackground(QPainter *painter, const QStyleOptionViewItem &option) const;
+    void paintExpandButton(QPainter *painter, const QRect &buttonRect, bool isExpanded) const;
+    void paintGroupText(QPainter *painter, const QRect &textRect, const QString &text, int count, const QStyleOptionViewItem &option) const;
+
+    // Group layout calculation methods
+
+    QRect getGroupTextRect(const QStyleOptionViewItem &option) const;
 
     QList<QRectF> getCornerGeometryList(const QRectF &baseRect, const QSizeF &cornerSize) const;
     void paintEmblems(QPainter *painter, const QRectF &iconRect, const QModelIndex &index) const;
@@ -135,6 +159,10 @@ protected:
 
     QScopedPointer<BaseItemDelegatePrivate> d;
     Q_DECLARE_PRIVATE_D(d, BaseItemDelegate)
+
+private:
+    // Group rendering constants
+    QSize m_expandButtonSize = QSize(16, 16);
 };
 
 }

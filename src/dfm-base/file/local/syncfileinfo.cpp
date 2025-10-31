@@ -226,8 +226,6 @@ bool SyncFileInfo::isAttributes(const OptInfoType type) const
         return d->filePath() == "/";
     case FileIsType::kIsBundle:
         return QFileInfo(url.path()).isBundle();
-    case FileIsType::kIsPrivate:
-        return d->isPrivate();
     default:
         return FileInfo::isAttributes(type);
     }
@@ -819,11 +817,6 @@ QString SyncFileInfoPrivate::iconName() const
 
 QString SyncFileInfoPrivate::mimeTypeName() const
 {
-    // At present, there is no dfmio library code. For temporary repair
-    // local file use the method on v20 to obtain mimeType
-    if (ProtocolUtils::isRemoteFile(q->fileUrl())) {
-        return this->attribute(DFileInfo::AttributeID::kStandardContentType).toString();
-    }
     return q->fileMimeType().name();
 }
 
@@ -953,17 +946,6 @@ bool SyncFileInfoPrivate::isExecutable() const
     return isExecutable;
 }
 
-bool SyncFileInfoPrivate::isPrivate() const
-{
-    const QString &path = const_cast<SyncFileInfoPrivate *>(this)->path();
-    const QString &name = fileName();
-
-    static DFMBASE_NAMESPACE::Match match("PrivateFiles");
-
-    QMutexLocker locker(&lock);
-    return match.match(path, name);
-}
-
 bool SyncFileInfoPrivate::canDelete() const
 {
     if (SystemPathUtil::instance()->isSystemPath(filePath()))
@@ -996,10 +978,6 @@ bool SyncFileInfoPrivate::canRename() const
     bool canRename = false;
     canRename = SysInfoUtils::isRootUser();
     if (!canRename) {
-        // dir can not write, can not rename
-        if (this->attribute(DFileInfo::AttributeID::kStandardIsDir).toBool() && !this->attribute(DFileInfo::AttributeID::kAccessCanWrite).toBool())
-            return false;
-
         return this->attribute(DFileInfo::AttributeID::kAccessCanRename).toBool();
     }
 
@@ -1008,9 +986,6 @@ bool SyncFileInfoPrivate::canRename() const
 
 bool SyncFileInfoPrivate::canFetch() const
 {
-    if (isPrivate())
-        return false;
-
     bool isArchive = false;
     if (q->exists())
         isArchive = DFMBASE_NAMESPACE::MimeTypeDisplayManager::instance()->supportArchiveMimetypes().contains(DMimeDatabase().mimeTypeForFile(q->fileUrl()).name());

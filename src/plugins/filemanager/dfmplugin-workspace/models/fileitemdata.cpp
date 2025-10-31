@@ -81,13 +81,13 @@ QIcon FileItemData::fileIcon() const
     if (!info)
         return QIcon::fromTheme("empty");
 
-    const auto &vaule = info->extendAttributes(ExtInfoType::kFileThumbnail);
-    if (!vaule.isValid()) {
+    const auto &value = info->extendAttributes(ExtInfoType::kFileThumbnail);
+    if (!value.isValid()) {
         ThumbnailFactory::instance()->joinThumbnailJob(url, Global::kLarge);
         // make sure the thumbnail is generated only once
         info->setExtendedAttributes(ExtInfoType::kFileThumbnail, QIcon());
     } else {
-        const auto &thumbIcon = vaule.value<QIcon>();
+        const auto &thumbIcon = value.value<QIcon>();
         if (!thumbIcon.isNull())
             return thumbIcon;
     }
@@ -133,17 +133,17 @@ QVariant FileItemData::data(int role) const
         return url.path();
     case kItemFileLastModifiedRole: {
         QDateTime lastModified;
-        if (sortInfo && sortInfo->isInfoCompleted()) {
+        if (sortInfo && !sortInfo->isSymLink() && sortInfo->isInfoCompleted()) {
             lastModified = QDateTime::fromSecsSinceEpoch(sortInfo->lastModifiedTime());
         }
         if (info) {
-            auto lastModified = info->timeOf(TimeInfoType::kLastModified).value<QDateTime>();
+            lastModified = info->timeOf(TimeInfoType::kLastModified).value<QDateTime>();
         }
         return lastModified.isValid() ? lastModified.toString(FileUtils::dateTimeFormat()) : "-";
     }
     case kItemFileCreatedRole: {
         QDateTime created;
-        if (sortInfo && sortInfo->isInfoCompleted()) {
+        if (sortInfo && !sortInfo->isSymLink() && sortInfo->isInfoCompleted()) {
             created = QDateTime::fromSecsSinceEpoch(sortInfo->createTime());
         }
         if (info) {
@@ -268,8 +268,9 @@ QVariant FileItemData::data(int role) const
     case kItemFileContentPreviewRole:
         if (sortInfo)
             return sortInfo->highlightContent();
-
         return QString();
+    case kItemGroupDisplayIndex:
+        return QVariant(groupDisplayIndex);
     default:
         return QVariant();
     }
@@ -288,6 +289,11 @@ void FileItemData::setExpanded(bool b)
 void FileItemData::setDepth(const int8_t depth)
 {
     this->depth = depth;
+}
+
+void FileItemData::setGroupDisplayIndex(int index)
+{
+    groupDisplayIndex = index;
 }
 
 void FileItemData::transFileInfo()

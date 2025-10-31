@@ -23,18 +23,22 @@ public:
     explicit SortByButtonPrivate(SortByButton *parent);
     virtual ~SortByButtonPrivate();
     void setItemSortRoles();
+    void setItemGroupRoles();
     void sort();
 
 private slots:
     void menuTriggered(QAction *action);
+    void groupMenuTriggered(QAction *action);
 
 private:
+    void setupMenu();
     void initializeUi();
     void initConnect();
 
     bool hoverFlag { false };
     QMenu *menu { nullptr };
-    bool iconClicked { false }; // Add iconClicked state
+    QMenu *groupMenu { nullptr };
+    bool iconClicked { false };   // Add iconClicked state
 };
 }   // namespace dfmplugin_titlebar
 

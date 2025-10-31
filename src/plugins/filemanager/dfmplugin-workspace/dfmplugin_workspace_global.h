@@ -46,6 +46,11 @@ enum class ModelState : uint8_t {
     kIdle,
     kBusy
 };
+
+enum class GroupingState : uint8_t {
+    kIdle,   // 未在分组或分组已完成
+    kGrouping   // 正在执行分组操作
+};
 #ifdef DTKWIDGET_CLASS_DSizeMode
 inline constexpr int kCompactIconViewSpacing { 0 };
 inline constexpr int kCompactIconModeColumnPadding { 5 };
@@ -83,6 +88,16 @@ inline constexpr int kMaxTabCount { 8 };
 // view select box
 inline constexpr int kSelectBoxLineWidth { 2 };
 
+namespace GroupStrategy {
+inline constexpr char kNoGroup[] { "NoGroupStrategy" };
+inline constexpr char kName[] { "Name" };
+inline constexpr char kSize[] { "Size" };
+inline constexpr char kModifiedTime[] { "ModifiedTime" };
+inline constexpr char kCreatedTime[] { "CreatedTime" };
+inline constexpr char kType[] { "Type" };
+inline constexpr char kCustomPath[] { "CustomPath" };
+inline constexpr char kCustomTime[] { "CustomTime" };
+}   // namespace GroupStrategy
 namespace PropertyKey {
 inline constexpr char kScheme[] { "Property_Key_Scheme" };
 inline constexpr char kKeepShow[] { "Property_Key_KeepShow" };

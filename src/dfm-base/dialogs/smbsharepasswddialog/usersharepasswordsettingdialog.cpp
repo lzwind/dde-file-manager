@@ -16,6 +16,7 @@
 #include <QProcess>
 #include <QDBusReply>
 #include <QVBoxLayout>
+#include <QEvent>
 
 DFMBASE_USE_NAMESPACE
 using namespace dfmbase;
@@ -33,6 +34,7 @@ UserSharePasswordSettingDialog::UserSharePasswordSettingDialog(QWidget *parent)
 
 void UserSharePasswordSettingDialog::initializeUi()
 {
+    setMinimumWidth(380);
     QStringList buttonTexts;
     buttonTexts.append(QObject::tr("Cancel", "button"));
     buttonTexts.append(QObject::tr("Confirm", "button"));
@@ -89,4 +91,13 @@ void UserSharePasswordSettingDialog::onButtonClicked(const int &index)
         Q_EMIT inputPassword(password);
     }
     close();
+}
+
+void UserSharePasswordSettingDialog::changeEvent(QEvent *event)
+{
+    if (event->type() == QEvent::FontChange) {
+        adjustSize();
+    }
+
+    DDialog::changeEvent(event);
 }

@@ -59,7 +59,7 @@ public:
     QWidget *expandedItem() override;
 
     QString displayFileName(const QModelIndex &index) const;
-    QList<QRectF> calFileNameRect(const QString &name, const QRectF &rect, Qt::TextElideMode elideMode) const;
+    QList<QRectF> calcFileNameRect(const QModelIndex &index, const QRectF &rect, Qt::TextElideMode elideMode) const;
 
 private slots:
     void editorFinished();
@@ -76,6 +76,11 @@ private:
                            const QModelIndex &index) const;
 
     QSize iconSizeByIconSizeLevel() const;
+
+    // Group functionality implementation
+    int getGroupHeaderHeight(const QStyleOptionViewItem &option) const override;
+    QRectF getGroupHeaderBackgroundRect(const QStyleOptionViewItem &option) const override;
+    bool editorEvent(QEvent *event, QAbstractItemModel *model, const QStyleOptionViewItem &option, const QModelIndex &index) override;
 
     Q_DECLARE_PRIVATE_D(d, IconItemDelegate)
 };

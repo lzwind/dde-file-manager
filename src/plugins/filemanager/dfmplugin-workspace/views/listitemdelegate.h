@@ -54,7 +54,7 @@ private:
                          const QModelIndex &index) const;
     void paintItemColumn(QPainter *painter, const QStyleOptionViewItem &option,
                          const QModelIndex &index, const QRectF &iconRect) const;
-    void paintFileName(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index, 
+    void paintFileName(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index,
                        const int &role, const QRectF &rect, const int &textLineHeight, const QUrl &url) const;
     QString getCorrectDisplayName(QPainter *painter, const QModelIndex &index, const QStyleOptionViewItem &option,
                                   const QUrl &url, const int &role, const int &textLineHeight, const QRectF &rect) const;
@@ -62,6 +62,11 @@ private:
     bool setEditorData(ListItemEditor *editor);
 
     int dataWidth(const QStyleOptionViewItem &option, const QModelIndex &index, int role) const;
+
+    // Group functionality implementation
+    int getGroupHeaderHeight(const QStyleOptionViewItem &option) const override;
+    QRectF getGroupHeaderBackgroundRect(const QStyleOptionViewItem &option) const override;
+    bool editorEvent(QEvent *event, QAbstractItemModel *model, const QStyleOptionViewItem &option, const QModelIndex &index) override;
 
     bool expandable { false };
     Q_DECLARE_PRIVATE_D(d, ListItemDelegate)

@@ -9,13 +9,13 @@
 #include "utils/crumbinterface.h"
 #include "utils/crumbmanager.h"
 #include "utils/titlebarhelper.h"
-#include "views/tab.h"
 
 #include <dfm-base/base/application/application.h>
 #include <dfm-base/widgets/filemanagerwindow.h>
 #include <dfm-base/widgets/filemanagerwindowsmanager.h>
 #include <dfm-base/utils/fileutils.h>
 #include <dfm-base/utils/universalutils.h>
+#include <dfm-base/utils/dialogmanager.h>
 #include <dfm-base/base/configs/dconfig/dconfigmanager.h>
 #include <dfm-framework/event/event.h>
 
@@ -44,6 +44,7 @@ using namespace GlobalDConfDefines::ConfigPath;
 using namespace GlobalDConfDefines::BaseConfig;
 
 inline constexpr int kSpacing { 10 };
+inline constexpr char kIsCustomTab[] { "isCustomTab" };
 
 TitleBarWidget::TitleBarWidget(QFrame *parent)
     : AbstractFrame(parent)
@@ -85,11 +86,6 @@ CrumbBar *TitleBarWidget::titleCrumbBar() const
 
 void TitleBarWidget::openNewTab(const QUrl &url)
 {
-    if (!tabBar()->tabAddable()) {
-        fmWarning() << "Cannot open new tab - maximum tab count reached";
-        return;
-    }
-
     tabBar()->createTab();
 
     if (url.isEmpty())
@@ -98,29 +94,22 @@ void TitleBarWidget::openNewTab(const QUrl &url)
     TitleBarEventCaller::sendCd(this, url);
 }
 
+void TitleBarWidget::openCustomFixedTabs()
+{
+    const auto &itemList = DConfigManager::instance()->value(kDefaultCfgPath, kCunstomFixedTabs, {}).toStringList();
+    for (const auto &item : itemList) {
+        int index = tabBar()->createInactiveTab(item);
+        tabBar()->setTabUserData(index, kIsCustomTab, true);
+    }
+}
+
 void TitleBarWidget::handleSplitterAnimation(const QVariant &position)
 {
-    if (position == splitterEndValue) {
-        splitterStartValue = -1;
-        splitterEndValue = -1;
-        isSplitterAnimating = false;
-    }
-
-    tabBar()->updateGeometry();
-    tabBar()->adjustSize();
-
     int newWidth = qMax(0, 95 - position.toInt());
     if (newWidth == placeholder->width())
         return;
 
     placeholder->setFixedWidth(newWidth);
-}
-
-void TitleBarWidget::handleAboutToPlaySplitterAnim(int startValue, int endValue)
-{
-    isSplitterAnimating = true;
-    splitterStartValue = startValue;
-    splitterEndValue = endValue;
 }
 
 void TitleBarWidget::handleHotkeyCtrlF()
@@ -157,7 +146,7 @@ void TitleBarWidget::handleHotketCloseCurrentTab()
         return;
     }
 
-    tabBar()->removeTab(tabBar()->getCurrentIndex());
+    tabBar()->removeTab(tabBar()->currentIndex());
 }
 
 void TitleBarWidget::handleHotketNextTab()
@@ -184,6 +173,16 @@ void TitleBarWidget::handleHotketCreateNewTab()
     }
 
     openNewTab(currentUrl());
+}
+
+void TitleBarWidget::handleCreateTabList(const QList<QUrl> &urlList)
+{
+    for (const auto &url : urlList) {
+        const FileInfoPointer &fileInfoPtr = InfoFactory::create<FileInfo>(url);
+        if (fileInfoPtr && fileInfoPtr->isAttributes(OptInfoType::kIsDir)) {
+            openNewTab(url);
+        }
+    }
 }
 
 void TitleBarWidget::handleHotketActivateTab(const int index)
@@ -346,15 +345,19 @@ void TitleBarWidget::initConnect()
     });
 
     connect(searchEditWidget, &SearchEditWidget::searchQuit, this, &TitleBarWidget::quitSearch);
+    connect(searchEditWidget, &SearchEditWidget::searchStop, this, [this]() {
+        TitleBarEventCaller::sendStopSearch(this);
+    });
 
     connect(this, &TitleBarWidget::currentUrlChanged, searchEditWidget, &SearchEditWidget::onUrlChanged);
 
     connect(bottomBar, &TabBar::newTabCreated, this, &TitleBarWidget::onTabCreated);
-    connect(bottomBar, &TabBar::tabRemoved, this, &TitleBarWidget::onTabRemoved);
+    connect(bottomBar, &TabBar::requestCreateView, this, &TitleBarWidget::handleCreateView);
+    connect(bottomBar, &TabBar::tabHasRemoved, this, &TitleBarWidget::onTabRemoved);
     connect(bottomBar, &TabBar::tabMoved, this, &TitleBarWidget::onTabMoved);
-    connect(bottomBar, &TabBar::currentChanged, this, &TitleBarWidget::onTabCurrentChanged);
+    connect(bottomBar, &TabBar::currentTabChanged, this, &TitleBarWidget::onTabCurrentChanged);
     connect(bottomBar, &TabBar::tabCloseRequested, this, &TitleBarWidget::onTabCloseRequested);
-    connect(bottomBar, &TabBar::tabAddButtonClicked, this, &TitleBarWidget::onTabAddButtonClicked);
+    connect(bottomBar, &TabBar::tabAddRequested, this, &TitleBarWidget::onTabAddButtonClicked);
 
 #ifdef DTKWIDGET_CLASS_DSizeMode
     connect(DGuiApplicationHelper::instance(), &DGuiApplicationHelper::sizeModeChanged, this, [this]() {
@@ -376,19 +379,19 @@ void TitleBarWidget::updateUiForSizeMode()
 
     auto optionBtn = topBar->findChild<DWindowOptionButton *>("DTitlebarDWindowOptionButton");
     if (optionBtn)
-        optionBtn->setFixedSize(50, 40);
+        optionBtn->setFixedSize(40, 40);
 
     auto closeBtn = topBar->findChild<DWindowCloseButton *>("DTitlebarDWindowCloseButton");
     if (closeBtn)
-        closeBtn->setFixedSize(50, 40);
+        closeBtn->setFixedSize(40, 40);
 
     auto minBtn = topBar->findChild<DWindowMinButton *>("DTitlebarDWindowMinButton");
     if (minBtn)
-        minBtn->setFixedSize(50, 40);
+        minBtn->setFixedSize(40, 40);
 
     auto maxBtn = topBar->findChild<DWindowMaxButton *>("DTitlebarDWindowMaxButton");
     if (maxBtn)
-        maxBtn->setFixedSize(50, 40);
+        maxBtn->setFixedSize(40, 40);
 }
 
 void TitleBarWidget::showAddrsssBar(const QUrl &url)
@@ -439,13 +442,6 @@ bool TitleBarWidget::eventFilter(QObject *watched, QEvent *event)
         }
     }
 
-    // if the splitter is animating, do not process the resize event of tabbar
-    // otherwise, the tabbar width will be changed twice(once by the resizeEvent and once by placeholder size changed)
-    if (watched == bottomBar && event->type() == QEvent::Resize) {
-        if (isSplitterAnimating)
-            return true;
-    }
-
     return false;
 }
 
@@ -472,6 +468,32 @@ void TitleBarWidget::restoreTitleBarState(const QString &uniqueId)
     }
 }
 
+bool TitleBarWidget::checkCustomFixedTab(int index)
+{
+    if (!tabBar()->tabUserData(index, kIsCustomTab).toBool())
+        return true;
+
+    const auto &url = tabBar()->tabUrl(index);
+    auto info = InfoFactory::create<FileInfo>(url);
+    if (info && info->exists())
+        return true;
+
+    // Some URLs cannot be checked by info, such as `computer:///`.
+    if (UrlRoute::isVirtual(url) && UrlRoute::isRootUrl(url))
+        return true;
+
+    int ret = DialogManagerInstance->showMessageDialog(DialogManager::kMsgErr, tr("Directory not found"),
+                                                       tr("Directory not found. Remove it?"),
+                                                       { tr("Cancel", "button"), tr("Remove", "button") });
+    if (ret == 1) {
+        auto urlList = DConfigManager::instance()->value(kDefaultCfgPath, kCunstomFixedTabs, {}).toStringList();
+        urlList.removeOne(url.toString());
+        DConfigManager::instance()->setValue(kDefaultCfgPath, kCunstomFixedTabs, urlList);
+        return false;
+    }
+    return true;
+}
+
 void TitleBarWidget::onAddressBarJump()
 {
     const QString &currentDir = QDir::currentPath();
@@ -480,20 +502,19 @@ void TitleBarWidget::onAddressBarJump()
     QDir::setCurrent(currentDir);
 }
 
-void TitleBarWidget::onTabCreated(const QString &uniqueId)
+void TitleBarWidget::handleCreateView(const QString &uniqueId)
 {
     TitleBarEventCaller::sendTabCreated(this, uniqueId);
+}
+
+void TitleBarWidget::onTabCreated()
+{
     curNavWidget->addHistroyStack();
 }
 
 void TitleBarWidget::onTabRemoved(int oldIndex, int nextIndex)
 {
-
-    Tab *tab = tabBar()->tabAt(oldIndex);
-    Tab *nextTab = tabBar()->tabAt(nextIndex);
-    if (tab && nextTab) {
-        TitleBarEventCaller::sendTabRemoved(this, tab->uniqueId(), nextTab->uniqueId());
-    }
+    TitleBarEventCaller::sendTabRemoved(this, tabBar()->tabUniqueId(oldIndex), tabBar()->tabUniqueId(nextIndex));
     curNavWidget->removeNavStackAt(oldIndex);
 }
 
@@ -513,31 +534,34 @@ void TitleBarWidget::resizeEvent(QResizeEvent *event)
 
 void TitleBarWidget::onTabCurrentChanged(int oldIndex, int newIndex)
 {
-    Tab *tab = tabBar()->tabAt(newIndex);
-    if (tab) {
-        if (oldIndex >= 0 && oldIndex < tabBar()->count())
-            saveTitleBarState(tabBar()->tabAt(oldIndex)->uniqueId());
+    if (tabBar()->isTabValid(newIndex)) {
+        if (!checkCustomFixedTab(newIndex)) {
+            tabBar()->removeTab(newIndex, oldIndex);
+            return;
+        }
+
+        if (oldIndex >= 0 && oldIndex < tabBar()->count()) {
+            saveTitleBarState(tabBar()->tabUniqueId(oldIndex));
+        }
         // switch tab must before change url! otherwise NavWidget can not work!
         curNavWidget->switchHistoryStack(newIndex);
-        TitleBarEventCaller::sendTabChanged(this, tab->uniqueId());
-        TitleBarEventCaller::sendChangeCurrentUrl(this, tab->getCurrentUrl());
-        restoreTitleBarState(tab->uniqueId());
-    } else {
-        fmWarning() << "Tab current changed but new tab is null - newIndex:" << newIndex;
+        TitleBarEventCaller::sendTabChanged(this, tabBar()->tabUniqueId(newIndex));
+        TitleBarEventCaller::sendChangeCurrentUrl(this, tabBar()->tabUrl(newIndex));
+        restoreTitleBarState(tabBar()->tabUniqueId(newIndex));
     }
 }
 
-void TitleBarWidget::onTabCloseRequested(int index, bool remainState)
+void TitleBarWidget::onTabCloseRequested(int index)
 {
-    tabBar()->removeTab(index, remainState);
+    tabBar()->removeTab(index);
 }
 
 void TitleBarWidget::onTabAddButtonClicked()
 {
     QUrl url = Application::instance()->appUrlAttribute(Application::kUrlOfNewTab);
-    auto tab = tabBar()->currentTab();
-    if (!url.isValid() && tab)
-        url = tab->getCurrentUrl();
+    auto tabUrl = tabBar()->tabUrl(tabBar()->currentIndex());
+    if (!url.isValid() && tabUrl.isValid())
+        url = tabUrl;
 
     openNewTab(url);
 }

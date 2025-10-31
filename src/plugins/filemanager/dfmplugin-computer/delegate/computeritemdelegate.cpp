@@ -81,6 +81,9 @@ ComputerItemDelegate::~ComputerItemDelegate()
 
 void ComputerItemDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const
 {
+    if (!index.data(ComputerModel::kItemVisibleRole).toBool())
+        return;
+
     painter->setRenderHint(QPainter::RenderHint::Antialiasing);
 
     ComputerItemData::ShapeType type = ComputerItemData::ShapeType(index.data(ComputerModel::DataRoles::kItemShapeTypeRole).toInt());
@@ -129,6 +132,10 @@ QWidget *ComputerItemDelegate::createEditor(QWidget *parent, const QStyleOptionV
     editor->setFrame(false);
     editor->setTextMargins(0, topMargin, 0, 0);
     editor->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+    // 重新设置调色板颜色值，使得背景色正确渲染，而不是保持透明状态。
+    auto p = editor->palette();
+    p.setColor(QPalette::Button, p.color(QPalette::Button));
+    editor->setPalette(p);
 
     if (!NPDeviceAliasManager::instance()->canSetAlias(index.data(ComputerModel::kRealUrlRole).toUrl())) {
         QRegularExpression regx(kRegPattern);

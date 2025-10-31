@@ -15,7 +15,6 @@
 #include <QHBoxLayout>
 
 DFMBASE_USE_NAMESPACE
-DFMBASE_USE_NAMESPACE
 using namespace dfmplugin_propertydialog;
 
 MultiFilePropertyDialog::MultiFilePropertyDialog(const QList<QUrl> &urls, QWidget *const parent)
@@ -29,7 +28,6 @@ MultiFilePropertyDialog::MultiFilePropertyDialog(const QList<QUrl> &urls, QWidge
     QList<QUrl> targets;
     UniversalUtils::urlsTransformToLocal(urlList, &targets);
     fileCalculationUtils->start(targets);
-    calculateFileCount();
     this->setAttribute(Qt::WA_DeleteOnClose, true);
 }
 
@@ -115,41 +113,8 @@ void MultiFilePropertyDialog::initHeadUi()
     addContent(frame);
 }
 
-void MultiFilePropertyDialog::calculateFileCount()
-{
-    int dirCount = 0;
-    int fileCount = 0;
-
-    for (QUrl &url : urlList) {
-        FileInfoPointer info = InfoFactory::create<FileInfo>(url);
-        if (info.isNull())
-            return;
-
-        if (info->isAttributes(OptInfoType::kIsSymLink)) {
-            if (info->isAttributes(OptInfoType::kIsDir))
-                ++dirCount;
-            else
-                ++fileCount;
-            continue;
-        }
-
-        if (info->isAttributes(OptInfoType::kIsDir)) {
-            ++dirCount;
-            continue;
-        }
-
-        if (info->isAttributes(OptInfoType::kIsFile)) {
-            ++fileCount;
-            continue;
-        }
-    }
-
-    fileCountValueLabel->setText(tr("%1 file(s), %2 folder(s)").arg(fileCount).arg(dirCount));
-}
-
 void MultiFilePropertyDialog::updateFolderSizeLabel(qint64 size, int filesCount, int directoryCount)
 {
-    Q_UNUSED(filesCount)
-    Q_UNUSED(directoryCount)
+    fileCountValueLabel->setText(tr("%1 file(s), %2 folder(s)").arg(filesCount).arg(directoryCount));
     totalSizeValueLabel->setText(FileUtils::formatSize(size));
 }

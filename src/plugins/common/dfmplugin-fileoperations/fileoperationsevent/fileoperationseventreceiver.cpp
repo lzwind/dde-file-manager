@@ -6,6 +6,7 @@
 #include "trashfileeventreceiver.h"
 #include "fileoperationsevent/fileoperationseventhandler.h"
 #include "fileoperations/operationsstackproxy.h"
+#include "fileoperations/fileoperationutils/filenameutils.h"
 
 #include "config.h"   //cmake
 
@@ -22,8 +23,13 @@
 #include <dfm-base/base/application/application.h>
 #include <dfm-base/utils/properties.h>
 #include <dfm-base/utils/systempathutil.h>
+#include <dfm-base/utils/protocolutils.h>
+#include <dfm-base/widgets/filemanagerwindowsmanager.h>
 
 #include <dfm-io/dfmio_utils.h>
+
+#include <QFileDialog>
+#include <QDir>
 
 Q_DECLARE_METATYPE(QList<QUrl> *)
 Q_DECLARE_METATYPE(bool *)
@@ -123,7 +129,7 @@ bool FileOperationsEventReceiver::revocation(const quint64 windowId, const QVari
         fmWarning() << "Revocation operation failed: missing required keys in operation data";
         return false;
     }
-    
+
     fmInfo() << "Processing revocation operation for window ID:" << windowId;
     GlobalEventType eventType = static_cast<GlobalEventType>(ret.value("undoevent").value<uint16_t>());
     QList<QUrl> sources = QUrl::fromStringList(ret.value("undosources").toStringList());
@@ -146,7 +152,7 @@ bool FileOperationsEventReceiver::revocation(const quint64 windowId, const QVari
         fmInfo() << "Revocation operation completed: no valid sources to process";
         return true;
     }
-    
+
     fmInfo() << "Revocation operation: type=" << static_cast<int>(eventType) << "sources=" << sources.count() << "targets=" << targets.count();
 
     switch (eventType) {
@@ -198,7 +204,7 @@ bool FileOperationsEventReceiver::redo(const quint64 windowId, const QVariantMap
         fmWarning() << "Redo operation failed: missing required keys in operation data";
         return false;
     }
-    
+
     fmInfo() << "Processing redo operation for window ID:" << windowId;
     GlobalEventType eventType = static_cast<GlobalEventType>(ret.value("undoevent").value<uint16_t>());
     QList<QUrl> sources = QUrl::fromStringList(ret.value("undosources").toStringList());
@@ -221,7 +227,7 @@ bool FileOperationsEventReceiver::redo(const quint64 windowId, const QVariantMap
         fmInfo() << "Redo operation completed: no valid sources to process";
         return true;
     }
-    
+
     fmInfo() << "Redo operation: type=" << static_cast<int>(eventType) << "sources=" << sources.count() << "targets=" << targets.count();
 
     switch (eventType) {
@@ -755,18 +761,70 @@ void FileOperationsEventReceiver::saveFileOperation(const QList<QUrl> &sourcesUr
     }
 }
 
-QUrl FileOperationsEventReceiver::checkTargetUrl(const QUrl &url)
+QUrl FileOperationsEventReceiver::determineLinkTarget(const QUrl &sourceUrl, const QUrl &linkUrl,
+                                                      const bool silence, const quint64 windowId)
 {
-    const QUrl &urlParent = DFMIO::DFMUtils::directParentUrl(url);
-    if (!urlParent.isValid())
-        return url;
+    // Case 1: Specific file path provided - use as-is (existing behavior)
+    if (linkUrl.isValid() && !linkUrl.isEmpty() && (!linkUrl.isLocalFile() || !QFileInfo(linkUrl.toLocalFile()).isDir())) {
+        fmInfo() << "Using provided target file path:" << linkUrl.path();
+        return linkUrl;
+    }
 
-    const QString &nameValid = FileUtils::nonExistSymlinkFileName(url, urlParent);
-    if (!nameValid.isEmpty())
-        return DFMIO::DFMUtils::buildFilePath(urlParent.toString().toStdString().c_str(),
-                                              nameValid.toStdString().c_str(), nullptr);
+    // Case 2: Directory path provided - auto-generate filename in that directory
+    if (linkUrl.isValid() && linkUrl.isLocalFile() && QFileInfo(linkUrl.toLocalFile()).isDir()) {
+        FileInfoPointer sourceInfo = InfoFactory::create<FileInfo>(sourceUrl);
+        FileInfoPointer targetDirInfo = InfoFactory::create<FileInfo>(linkUrl);
 
-    return url;
+        if (!sourceInfo || !targetDirInfo) {
+            fmWarning() << "Failed to create file info for symlink generation";
+            return QUrl();
+        }
+
+        const QString &linkName = FileNamingUtils::generateNonConflictingSymlinkName(sourceInfo, targetDirInfo);
+        if (linkName.isEmpty()) {
+            fmWarning() << "Failed to generate symlink name";
+            return QUrl();
+        }
+
+        QUrl result = QUrl::fromLocalFile(linkUrl.toLocalFile() + QDir::separator() + linkName);
+        fmInfo() << "Auto-generated target in directory:" << linkUrl.path() << "result:" << result.path();
+        return result;
+    }
+
+    // Case 3: Empty/invalid link URL
+    if (silence) {
+        // Silent mode: cannot show dialog, return invalid URL to indicate failure
+        fmWarning() << "Cannot determine target in silence mode without valid link URL";
+        return QUrl();
+    } else {
+        // Interactive mode: show file dialog
+        QString currentPth = QDir::currentPath();
+        FileInfoPointer sourceInfo = InfoFactory::create<FileInfo>(sourceUrl);
+        auto window = FileManagerWindowsManager::instance().findWindowById(windowId);
+        if (window && window->currentUrl().isLocalFile())
+            currentPth = window->currentUrl().toLocalFile();
+        FileInfoPointer currentDirInfo = InfoFactory::create<FileInfo>(QUrl::fromLocalFile(currentPth));
+
+        if (!sourceInfo || !currentDirInfo) {
+            fmWarning() << "Failed to create file info for interactive symlink generation";
+            return QUrl();
+        }
+
+        const QString &linkName = FileNamingUtils::generateNonConflictingSymlinkName(sourceInfo, currentDirInfo);
+        if (linkName.isEmpty()) {
+            fmWarning() << "Failed to generate symlink name for dialog";
+            return QUrl();
+        }
+        QString fullPath = QDir(currentPth).absoluteFilePath(linkName);
+        QString linkPath = QFileDialog::getSaveFileName(nullptr, QObject::tr("Create symlink"), fullPath);
+        if (linkPath.isEmpty()) {
+            fmWarning() << "Symlink creation cancelled by user";
+            return QUrl();   // User cancelled
+        }
+        QUrl result = QUrl::fromLocalFile(linkPath);
+        fmInfo() << "User selected target path:" << result.path();
+        return result;
+    }
 }
 
 FileOperationsEventReceiver *FileOperationsEventReceiver::instance()
@@ -972,7 +1030,7 @@ bool FileOperationsEventReceiver::handleOperationOpenFilesByApp(const quint64 wi
     }
     ok = fileHandler.openFilesByApp(urls, app);
     if (!ok) {
-        fmWarning() << "Failed to open files with application:" 
+        fmWarning() << "Failed to open files with application:"
                     << "error=" << fileHandler.errorString()
                     << "app=" << app
                     << "fileCount=" << urls.count();
@@ -1220,6 +1278,8 @@ bool FileOperationsEventReceiver::handleOperationLinkFile(const quint64 windowId
 {
     bool ok = false;
     QString error;
+
+    // Handle non-local files
     if (!url.isLocalFile()) {
         if (dpfHookSequence->run("dfmplugin_fileoperations", "hook_Operation_LinkFile", windowId, url, link, force, silence)) {
             dpfSignalDispatcher->publish(DFMBASE_NAMESPACE::GlobalEventType::kCreateSymlinkResult,
@@ -1228,26 +1288,50 @@ bool FileOperationsEventReceiver::handleOperationLinkFile(const quint64 windowId
         }
     }
 
+    // Transform source URL to local if needed
+    QUrl localUrl = url;
+    QList<QUrl> urls {};
+    bool transformOk = UniversalUtils::urlsTransformToLocal({ url }, &urls);
+    if (transformOk && !urls.isEmpty()) {
+        localUrl = urls.at(0);
+    }
+
+    // Apply bind path transformation for source
+    const QString &bindPath = FileUtils::bindPathTransform(localUrl.path(), false);
+    const QUrl sourceUrl = QUrl::fromLocalFile(bindPath);
+
+    // Determine target URL based on different scenarios
+    QUrl targetUrl = determineLinkTarget(localUrl, link, silence, windowId);
+    if (!targetUrl.isValid()) {
+        fmInfo() << "Symlink creation cancelled or failed to determine target";
+        return false;
+    }
+
     DFMBASE_NAMESPACE::LocalFileHandler fileHandler;
-    // check link
+
+    // Handle force deletion of existing target
     if (force) {
-        FileInfoPointer toInfo = InfoFactory::create<FileInfo>(link);
+        FileInfoPointer toInfo = InfoFactory::create<FileInfo>(targetUrl);
         if (toInfo && toInfo->exists()) {
             DFMBASE_NAMESPACE::LocalFileHandler fileHandlerDelete;
-            fileHandlerDelete.deleteFile(link);
+            fileHandlerDelete.deleteFile(targetUrl);
+            fmInfo() << "Existing target file deleted for forced symlink creation";
         }
     }
-    QUrl urlValid = link;
-    if (silence) {
-        urlValid = checkTargetUrl(link);
-    }
-    ok = fileHandler.createSystemLink(url, urlValid);
+
+    // Create the symlink
+    ok = fileHandler.createSystemLink(sourceUrl, targetUrl);
     if (!ok) {
         error = fileHandler.errorString();
+        fmWarning() << "Failed to create symlink: source=" << sourceUrl.path() << "target=" << targetUrl.path() << "error=" << error;
+
         dialogManager->showErrorDialog(tr("link file error"), error);
+    } else {
+        fmInfo() << "Symlink created successfully: source=" << sourceUrl.path() << "target=" << targetUrl.path();
     }
+
     dpfSignalDispatcher->publish(DFMBASE_NAMESPACE::GlobalEventType::kCreateSymlinkResult,
-                                 windowId, QList<QUrl>() << url << urlValid, ok, error);
+                                 windowId, QList<QUrl>() << url << targetUrl, ok, error);
     return ok;
 }
 
@@ -1476,16 +1560,16 @@ void FileOperationsEventReceiver::handleOperationCleanByUrls(const QList<QUrl> &
         fmWarning() << "Clean operations by URLs aborted: URL list is empty";
         return;
     }
-    
+
     fmInfo() << "Cleaning operations by URLs, count:" << urls.count();
-    
+
     QStringList strs;
     for (const auto &url : urls) {
         if (url.isValid())
             strs.append(url.toString());
     }
     OperationsStackProxy::instance().CleanOperationsByUrl(strs);
-    
+
     fmInfo() << "Operations cleaned successfully for" << strs.count() << "valid URLs";
 }
 
@@ -1499,7 +1583,7 @@ void FileOperationsEventReceiver::handleRecoveryOperationRedoRecovery(const quin
 void FileOperationsEventReceiver::handleSaveRedoOpt(const QString &token, const qint64 fileSize)
 {
     fmInfo() << "Processing save redo operation for token:" << token << "fileSize:" << fileSize;
-    
+
     QVariantMap ret;
     {
         QMutexLocker lk(&undoLock);
@@ -1513,7 +1597,7 @@ void FileOperationsEventReceiver::handleSaveRedoOpt(const QString &token, const 
         fmWarning() << "Empty undo operation data for token:" << token;
         return;
     }
-    
+
     GlobalEventType undoEventType = static_cast<GlobalEventType>(ret.value("undoevent").value<uint16_t>());
     QList<QUrl> undoSources = QUrl::fromStringList(ret.value("undosources").toStringList());
     QList<QUrl> undoTargets = QUrl::fromStringList(ret.value("undotargets").toStringList());
@@ -1521,18 +1605,18 @@ void FileOperationsEventReceiver::handleSaveRedoOpt(const QString &token, const 
     QList<QUrl> redoSources = QUrl::fromStringList(ret.value("redosources").toStringList());
     QList<QUrl> redoTargets = QUrl::fromStringList(ret.value("redotargets").toStringList());
     QUrl templateUrl = ret.value("templateurl", QUrl()).toUrl();
-    
+
     qint64 compare = 0;
     if (templateUrl.isValid()) {
         auto info = InfoFactory::create<FileInfo>(templateUrl, Global::CreateFileInfoType::kCreateFileInfoSync);
         if (info)
             compare = info->size();
     }
-    
+
     if (redoEventType != GlobalEventType::kTouchFile || fileSize == compare) {
-        fmInfo() << "Saving file operation: undoType=" << static_cast<int>(undoEventType) 
+        fmInfo() << "Saving file operation: undoType=" << static_cast<int>(undoEventType)
                  << "redoType=" << static_cast<int>(redoEventType)
-                 << "undoSources=" << undoSources.count() 
+                 << "undoSources=" << undoSources.count()
                  << "redoSources=" << redoSources.count();
         saveFileOperation(redoSources, redoTargets, redoEventType, undoSources, undoTargets, undoEventType, true, templateUrl);
         fmInfo() << "File operation saved successfully";
@@ -1594,7 +1678,7 @@ void FileOperationsEventReceiver::handleOperationFilesPreview(const quint64 wind
         fmWarning() << "Failed to create temporary file for preview data";
         return;
     }
-    
+
     fmInfo() << "Processing files preview request: selectUrls=" << selectUrls.count() << "dirUrls=" << dirUrls.count();
 
     // Write data to temporary file in JSON format
@@ -1631,5 +1715,33 @@ bool FileOperationsEventReceiver::handleIsSubFile(const QUrl &parent, const QUrl
         return false;
 
     return sub.path().startsWith(parent.path());
+}
+
+void FileOperationsEventReceiver::handleCopyFilePath(const QList<QUrl> &urlList)
+{
+    if (urlList.isEmpty())
+        return;
+
+    QStringList pathList;
+    if (ProtocolUtils::isLocalFile(urlList.first())) {
+        std::transform(urlList.cbegin(), urlList.cend(), std::back_inserter(pathList),
+                       [](const auto &url) {
+                           return url.path();
+                       });
+    } else {
+        for (const auto &url : std::as_const(urlList)) {
+            auto info = InfoFactory::create<FileInfo>(url);
+            if (!info)
+                continue;
+
+            pathList << info->pathOf(PathInfoType::kAbsoluteFilePath);
+        }
+    }
+
+    if (!pathList.isEmpty()) {
+        QMimeData *data = new QMimeData;
+        data->setText(pathList.join('\n'));
+        ClipBoard::instance()->setDataToClipboard(data);
+    }
 }
 }   // namespace dfmplugin_fileoperations

@@ -41,7 +41,6 @@ public slots:
     void switchToCustom();
     void switchToNormalized(int cf);
     void showOptionWindow();
-    void onOrganizered();
 
 protected:
     QWidget *findView(QWidget *root) const;
@@ -52,6 +51,8 @@ public:
     CollectionModel *model { nullptr };
     CanvasInterface *canvas { nullptr };
     OptionsWindow *options { nullptr };
+
+    QTimer *layoutTimer { nullptr };
 
 private:
     FrameManager *q = nullptr;

@@ -25,9 +25,9 @@ TagEditor::TagEditor(QWidget *const parent, bool inTagDir)
 
     // NOTE: in wayland you must specify the window flags manually
     if (dfmbase::WindowUtils::isWayLand())
-        setWindowFlags(windowFlags() | Qt::Tool | Qt::FramelessWindowHint);
+        setWindowFlags(windowFlags() | Qt::ToolTip | Qt::FramelessWindowHint);
     else
-        setWindowFlags(Qt::Tool);
+        setWindowFlags(Qt::ToolTip);
 }
 
 void TagEditor::setFocusOutSelfClosing(bool value) noexcept
@@ -116,8 +116,8 @@ void TagEditor::initializeParameters()
     setMargin(0);
     setFixedWidth(140);
     setFocusPolicy(Qt::StrongFocus);
-    setBorderColor(QColor { "#ffffff" });
-    setBackgroundColor(QColor { "#ffffff" });
+    setBorderColor(palette().color(QPalette::Base));
+    setBackgroundColor(palette().color(QPalette::Base));
     setWindowFlags(Qt::FramelessWindowHint);
     setAttribute(Qt::WA_DeleteOnClose);
 }

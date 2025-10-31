@@ -45,11 +45,12 @@ using namespace ddplugin_organizer;
 
 #define EDITOR_SHOW_SUFFIX "_d_whether_show_suffix"
 
-const int CollectionItemDelegate::kTextPadding = 2;
+const int CollectionItemDelegate::kTextPadding = 4;
 const int CollectionItemDelegate::kIconSpacing = 2;
 const int CollectionItemDelegate::kIconTopSpacing = 4;
 const int CollectionItemDelegate::kIconBackRadius = 18;
 const int CollectionItemDelegate::kIconRectRadius = 4;
+const int CollectionItemDelegate::kIconBackgroundMargin = 4;
 
 CollectionItemDelegatePrivate::CollectionItemDelegatePrivate(CollectionItemDelegate *qq)
     : q(qq)
@@ -151,8 +152,9 @@ void CollectionItemDelegate::paint(QPainter *painter, const QStyleOptionViewItem
     // get item paint geomerty
     // the method to get rect for each element is equal to paintGeomertys(option, index);
     {
-        // draw icon
+        // draw icon and background
         const QRect rIcon = iconRect(option.rect);
+        paintBackground(painter, indexOption, rIcon);
         paintIcon(painter, indexOption.icon,
                   { rIcon,
                     Qt::AlignCenter,
@@ -608,7 +610,7 @@ QRect CollectionItemDelegate::labelRect(const QRect &paintRect, const QRect &use
 {
     QRect lable = paintRect;
     // label rect is under the icon.
-    lable.setTop(usedRect.bottom());
+    lable.setTop(usedRect.bottom() + kIconBackgroundMargin);
 
     // minus text padding at left and right.
     lable.setWidth(paintRect.width() - 2 * kTextPadding);
@@ -803,6 +805,26 @@ QRect CollectionItemDelegate::paintIcon(QPainter *painter, const QIcon &icon, co
         painter->setRenderHints(painter->renderHints() | QPainter::Antialiasing | QPainter::SmoothPixmapTransform, true);
 
         auto iconStyle { IconUtils::getIconStyle(opts.rect.size().toSize().width()) };
+
+        // 计算可用的图像绘制区域（减去阴影和边框）
+        QRectF availableRect = opts.rect;
+        availableRect.adjust(iconStyle.shadowRange, iconStyle.shadowRange, -iconStyle.shadowRange, -iconStyle.shadowRange);
+        availableRect.adjust(iconStyle.stroke, iconStyle.stroke, -iconStyle.stroke, -iconStyle.stroke);
+
+        // 计算缩略图的最佳显示尺寸 - 如果小于可用区域则放大铺满
+        qreal scaleX = availableRect.width() / (w > 0 ? w : 1);
+        qreal scaleY = availableRect.height() / (h > 0 ? h : 1);
+        qreal scale = qMin(scaleX, scaleY);
+
+        // 如果原图小于可用区域，则等比放大；否则保持原逻辑
+        if (scale > 1.0) {
+            w *= scale;
+            h *= scale;
+            // 重新计算居中位置
+            x = opts.rect.x() + (opts.rect.width() - w) / 2.0;
+            y = opts.rect.y() + (opts.rect.height() - h) / 2.0;
+        }
+
         QRect backgroundRect { qRound(x), qRound(y), qRound(w), qRound(h) };
         QRect imageRect { backgroundRect };
 
@@ -844,6 +866,29 @@ QRectF CollectionItemDelegate::paintEmblems(QPainter *painter, const QRectF &rec
         });
     }
     return rect;
+}
+
+void CollectionItemDelegate::paintBackground(QPainter *painter, const QStyleOptionViewItem &option, const QRect &iconRect) const
+{
+    bool isSelected = (option.state & QStyle::State_Selected) && option.showDecorationSelected;
+    if (!isSelected)
+        return;
+
+    QColor backgroundColor(33, 33, 33, qRound(255 * 0.25));
+    QColor borderColor(241, 241, 241, qRound(255 * 0.25));
+    QRect backgroundRect = iconRect.adjusted(-kIconBackgroundMargin, -kIconBackgroundMargin, kIconBackgroundMargin, kIconBackgroundMargin);
+
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing);
+
+    QPainterPath path;
+    path.addRoundedRect(backgroundRect, kIconRectRadius, kIconRectRadius);
+    painter->fillPath(path, backgroundColor);
+
+    painter->setPen(borderColor);
+    painter->drawPath(path);
+
+    painter->restore();
 }
 
 void CollectionItemDelegate::paintLabel(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index, const QRect &rLabel) const

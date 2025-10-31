@@ -8,6 +8,7 @@
 #include "dfmplugin_trash_global.h"
 
 #include <dfm-base/interfaces/private/abstractmenuscene_p.h>
+#include <dfm-base/dfm_global_defines.h>
 
 namespace dfmplugin_trash {
 
@@ -21,7 +22,20 @@ public:
     explicit TrashMenuScenePrivate(TrashMenuScene *qq);
 
     void updateMenu(QMenu *menu);
-    void updateSubMenu(QMenu *menu);
+    void updateSortSubMenu(QMenu *menu);
+    void updateGroupSubMenu(QMenu *menu);
+    void groupByRole(const QString &strategy);
+
+private:
+    /**
+     * @brief Generic method to update submenus with custom actions
+     * @param menu The submenu to update
+     * @param actionsToRemove List of action IDs to remove from the submenu
+     * @param actionsToAdd List of action IDs to add to the submenu (in order)
+     */
+    void updateSubMenuGeneric(QMenu *menu,
+                              const QStringList &actionsToRemove,
+                              const QStringList &actionsToAdd);
 
 private:
     TrashMenuScene *q;

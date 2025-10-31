@@ -130,7 +130,7 @@ void VaultHelper::siderItemClicked(quint64 windowId, const QUrl &url)
     QApplication::restoreOverrideCursor();
     VaultHelper::instance()->appendWinID(windowId);
 
-    switch (instance()->state(PathManager::vaultLockPath())) {
+    switch (instance()->state(PathManager::vaultLockPath(), false)) {
     case VaultState::kNotExisted: {
         fmInfo() << "Vault: Vault not existed, showing create dialog";
         VaultHelper::instance()->createVaultDialog();
@@ -156,9 +156,9 @@ void VaultHelper::siderItemClicked(quint64 windowId, const QUrl &url)
     }
 }
 
-VaultState VaultHelper::state(const QString &baseDir) const
+VaultState VaultHelper::state(const QString &baseDir, bool useCache) const
 {
-    return FileEncryptHandle::instance()->state(baseDir);
+    return FileEncryptHandle::instance()->state(baseDir, useCache);
 }
 
 bool VaultHelper::updateState(VaultState curState)
@@ -364,6 +364,8 @@ QWidget *VaultHelper::createVaultPropertyDialog(const QUrl &url)
 QUrl VaultHelper::vaultToLocalUrl(const QUrl &url)
 {
     if (url.scheme() != instance()->scheme()) {
+        if (url.scheme() == Global::Scheme::kFile)
+            return url;
         fmWarning() << "Vault: URL scheme mismatch, expected:" << instance()->scheme() << "got:" << url.scheme();
         return QUrl();
     }
@@ -559,7 +561,7 @@ bool VaultHelper::urlsToLocal(const QList<QUrl> &origins, QList<QUrl> *urls)
 
 void VaultHelper::showInProgressDailog(QString msg)
 {
-    //期间有拷贝，压缩任务时，提示不可上锁
+    // 期间有拷贝，压缩任务时，提示不可上锁
     if (msg.contains("Device or resource busy")) {
         fmWarning() << "Vault: Device busy error detected";
         DialogManagerInstance->showErrorDialog(tr("Vault"), tr("A task is in progress, so it cannot perform your operation"));

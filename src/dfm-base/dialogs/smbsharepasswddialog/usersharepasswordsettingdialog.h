@@ -26,6 +26,9 @@ Q_SIGNALS:
 public Q_SLOTS:
     void onButtonClicked(const int &index);
 
+protected:
+    void changeEvent(QEvent *event) override;
+
 private:
     DTK_WIDGET_NAMESPACE::DPasswordEdit *passwordEdit;
     QWidget *content;
